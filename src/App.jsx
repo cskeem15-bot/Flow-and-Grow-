@@ -96,11 +96,21 @@ const DEFAULT_CONFIG = {
       label: `Set ${i + 1}`,
       rows: `${startRow}–${endRow}`,
       gates: endRow - startRow + 1,
-      hours: 8
+      hours: 8,
+      frequencyDays: 3,
+      afiMode: 'every',
+      order: i + 1,
+      active: true
     };
   }),
   crew: ['Cody']
 };
+
+const AFI_MODE_OPTIONS = [
+  { id: 'every', label: 'Every', sub: 'all rows' },
+  { id: 'evens', label: 'Evens', sub: 'AFI' },
+  { id: 'odds', label: 'Odds', sub: 'AFI' }
+];
 
 const DEFAULT_REMINDERS = [
   { id: 'r1', title: 'Check tail flow', desc: 'Tail should be 70–80% of head flow. Adjust gate count if weak.', frequency: 'each_set', enabled: true, createdAt: Date.now() },
@@ -322,6 +332,68 @@ function loadFonts() {
   document.head.appendChild(link);
 }
 
+// Fills in defaults for older saved configs so every set has the new
+// per-set scheduling fields (frequency, AFI mode, order, active flag).
+function migrateConfig(c) {
+  if (!c) return c;
+  const sets = (c.sets || []).map((s, i) => ({
+    frequencyDays: 3,
+    afiMode: 'every',
+    order: i + 1,
+    active: true,
+    ...s
+  }));
+  return { ...c, sets };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Ranks active field sections by their own watering frequency/order so the
+// app can recommend what to run next, independent of a fixed weekly cycle.
+function computeNextSets(config, lastCompleted = {}, now = Date.now()) {
+  const activeSets = (config.sets || []).filter(s => s.active !== false);
+  return activeSets
+    .map(set => {
+      const last = lastCompleted[set.id] || null;
+      const freqMs = (set.frequencyDays || 1) * DAY_MS;
+      const dueAt = last ? last + freqMs : 0;
+      const isDue = now >= dueAt;
+      let dueLabel;
+      if (!last) {
+        dueLabel = 'Never watered';
+      } else if (isDue) {
+        const daysSince = Math.floor((now - last) / DAY_MS);
+        dueLabel = daysSince <= 0 ? 'Due now' : `Due now · last watered ${daysSince}d ago`;
+      } else {
+        const daysUntil = Math.ceil((dueAt - now) / DAY_MS);
+        dueLabel = `Due in ${daysUntil}d`;
+      }
+      return { set, lastCompleted: last, dueAt, isDue, dueLabel };
+    })
+    .sort((a, b) => {
+      if (a.isDue !== b.isDue) return a.isDue ? -1 : 1;
+      if (a.dueAt !== b.dueAt) return a.dueAt - b.dueAt;
+      return (a.set.order ?? 0) - (b.set.order ?? 0);
+    });
+}
+
+// Projects which section would run on each upcoming day, assuming one
+// section is run per day in due/order priority and the rotation continues.
+function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDate = new Date()) {
+  const sim = { ...lastCompleted };
+  const plan = [];
+  for (let i = 0; i < days; i++) {
+    const date = new Date(startDate);
+    date.setDate(date.getDate() + i);
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const ranked = computeNextSets(config, sim, dayStart);
+    const top = ranked[0] || null;
+    plan.push({ date, set: top?.set || null, isDue: top?.isDue ?? false, dueLabel: top?.dueLabel ?? null });
+    if (top) sim[top.set.id] = dayStart;
+  }
+  return plan;
+}
+
 // ============================================================
 // MAIN APP
 // ============================================================
@@ -330,6 +402,7 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [activeSet, setActiveSet] = useState(null);
   const [currentWeek, setCurrentWeek] = useState(null);
+  const [schedule, setSchedule] = useState(null);
   const [reminders, setReminders] = useState([]);
   const [todayNote, setTodayNote] = useState(null);
   const [photosByLocation, setPhotosByLocation] = useState({});
@@ -361,13 +434,15 @@ export default function App() {
   }, []);
 
   async function loadAll() {
-    const c = await getValue('config', DEFAULT_CONFIG);
+    const c = migrateConfig(await getValue('config', DEFAULT_CONFIG));
     setConfig(prev => JSON.stringify(prev) === JSON.stringify(c) ? prev : c);
     const a = await getValue('active', null);
     setActiveSet(prev => JSON.stringify(prev) === JSON.stringify(a) ? prev : a);
     const wk = await getValue(`week:${weekKey}`, null);
     const newWeek = wk || { weekKey, mode: 'every', startedAt: null, sets: {} };
     setCurrentWeek(prev => JSON.stringify(prev) === JSON.stringify(newWeek) ? prev : newWeek);
+    const sch = await getValue('schedule', { lastCompleted: {} });
+    setSchedule(prev => JSON.stringify(prev) === JSON.stringify(sch) ? prev : sch);
     const r = await getValue('reminders', DEFAULT_REMINDERS);
     setReminders(prev => JSON.stringify(prev) === JSON.stringify(r) ? prev : r);
     const todays = await getValue(`daynote:${dayKey}`, null);
@@ -470,6 +545,13 @@ export default function App() {
     setActiveSet(null);
     await saveWeek(newWeek);
     await setValue('active', null);
+
+    const newSchedule = {
+      ...schedule,
+      lastCompleted: { ...schedule.lastCompleted, [activeSet.setId]: completedAt }
+    };
+    setSchedule(newSchedule);
+    await setValue('schedule', newSchedule);
   }
 
   async function cancelActive() {
@@ -483,14 +565,22 @@ export default function App() {
     await setValue('active', null);
   }
 
-  async function setWeekMode(mode) {
-    await saveWeek({ ...currentWeek, mode });
-  }
-
   async function resetSetStatus(setId) {
     const newWeek = { ...currentWeek };
+    const completedAt = newWeek.sets[setId]?.completedAt;
     newWeek.sets = { ...newWeek.sets };
     delete newWeek.sets[setId];
+
+    // If this was the most recent completion driving the schedule, undo it
+    // so the section becomes due again instead of silently staying "watered".
+    if (completedAt && schedule.lastCompleted[setId] === completedAt) {
+      recordWrite();
+      const newSchedule = { ...schedule, lastCompleted: { ...schedule.lastCompleted } };
+      delete newSchedule.lastCompleted[setId];
+      setSchedule(newSchedule);
+      await setValue('schedule', newSchedule);
+    }
+
     await saveWeek(newWeek);
   }
 
@@ -538,7 +628,7 @@ export default function App() {
     await saveTodayNote(newNote);
   }
 
-  if (loading || !config || !currentWeek) {
+  if (loading || !config || !currentWeek || !schedule) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
         <div className="text-center">
@@ -575,6 +665,7 @@ export default function App() {
             config={config}
             activeSet={activeSet}
             currentWeek={currentWeek}
+            schedule={schedule}
             reminders={reminders.filter(r => r.enabled)}
             todayNote={todayNote}
             onStart={startSet}
@@ -590,11 +681,11 @@ export default function App() {
           <WeekView
             config={config}
             currentWeek={currentWeek}
+            schedule={schedule}
             activeSet={activeSet}
             photosByLocation={photosByLocation}
             weekKey={weekKey}
             onStart={startSet}
-            onSetMode={setWeekMode}
             onResetSet={resetSetStatus}
             onAddPhoto={addPhoto}
             onDeletePhoto={deletePhoto}
@@ -617,7 +708,7 @@ export default function App() {
           <HistoryView currentWeekKey={weekKey} config={config} />
         )}
         {view === 'schedule' && (
-          <ScheduleView config={config} setView={setView} />
+          <ScheduleView config={config} schedule={schedule} setView={setView} />
         )}
       </div>
 
@@ -650,7 +741,7 @@ function Header({ config, weekKey }) {
   );
 }
 
-function NowView({ config, activeSet, currentWeek, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, tick, setView }) {
+function NowView({ config, activeSet, currentWeek, schedule, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, tick, setView }) {
   const [showComplete, setShowComplete] = useState(false);
   const [showStart, setShowStart] = useState(null);
   const [showTailWatch, setShowTailWatch] = useState(false);
@@ -661,9 +752,10 @@ function NowView({ config, activeSet, currentWeek, reminders, todayNote, onStart
   const [quickEntryAuthor, setQuickEntryAuthor] = useState(config.crew[0] || '');
 
   const setsDone = Object.values(currentWeek.sets).filter(s => s.status === 'done').length;
-  const totalSets = config.sets.length;
-  const allDone = setsDone === totalSets;
-  const nextSet = config.sets.find(s => !currentWeek.sets[s.id]);
+  const activeSetsCount = config.sets.filter(s => s.active !== false).length;
+  const nextSets = computeNextSets(config, schedule.lastCompleted);
+  const nextInfo = nextSets[0];
+  const nextSet = nextInfo?.set;
 
   const todayEntries = (todayNote && todayNote.entries) || [];
 
@@ -692,18 +784,19 @@ function NowView({ config, activeSet, currentWeek, reminders, todayNote, onStart
           onCancel={onCancel}
           onOpenTailWatch={() => setShowTailWatch(true)}
         />
-      ) : allDone ? (
+      ) : !nextSet ? (
         <div className="rounded-2xl p-8 text-center" style={{
           background: 'linear-gradient(135deg, #1A2614 0%, #1E2818 100%)',
           border: '1px solid #2A3525'
         }}>
-          <CheckCircle className="w-16 h-16 mx-auto mb-4" style={{ color: '#A3E635' }} />
-          <div className="font-display text-3xl mb-2">Week Complete</div>
-          <div style={{ color: '#8C9683' }}>All {totalSets} sets finished.</div>
+          <Settings className="w-16 h-16 mx-auto mb-4" style={{ color: '#8C9683' }} />
+          <div className="font-display text-3xl mb-2">No Active Sections</div>
+          <div style={{ color: '#8C9683' }}>Add field sections in Setup to get started.</div>
         </div>
       ) : (
         <NextSetCard
           nextSet={nextSet}
+          dueInfo={nextInfo}
           config={config}
           showStart={showStart}
           setShowStart={setShowStart}
@@ -800,7 +893,7 @@ function NowView({ config, activeSet, currentWeek, reminders, todayNote, onStart
         </div>
       </div>
 
-      <WeekProgress setsDone={setsDone} totalSets={totalSets} mode={currentWeek.mode} />
+      <WeekProgress setsDone={setsDone} totalSets={activeSetsCount} />
 
       {showTailWatch && activeSet && (
         <TailWatchModal
@@ -922,17 +1015,28 @@ function ActiveSetCard({ config, activeSet, showComplete, setShowComplete, notes
   );
 }
 
-function NextSetCard({ nextSet, config, showStart, setShowStart, crewMember, setCrewMember, customHours, setCustomHours, onStart }) {
+function NextSetCard({ nextSet, dueInfo, config, showStart, setShowStart, crewMember, setCrewMember, customHours, setCustomHours, onStart }) {
+  const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === (nextSet?.afiMode || 'every'))?.label || 'Every';
   return (
     <div className="rounded-2xl p-6" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
-      <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>
-        Up Next
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>
+          Up Next
+        </div>
+        {dueInfo && (
+          <div className="text-xs px-2 py-1 rounded-full font-semibold" style={{
+            background: dueInfo.isDue ? '#A3E635' : '#2A3525',
+            color: dueInfo.isDue ? '#0B0F08' : '#8C9683'
+          }}>
+            {dueInfo.dueLabel}
+          </div>
+        )}
       </div>
       <div className="font-display text-4xl mb-1" style={{ letterSpacing: '-0.02em' }}>
         {nextSet?.label}
       </div>
       <div className="text-sm mb-6" style={{ color: '#8C9683' }}>
-        Rows {nextSet?.rows} · {nextSet?.gates} gates · {nextSet?.hours}h planned
+        Rows {nextSet?.rows} · {nextSet?.gates} gates · {nextSet?.hours}h planned · every {nextSet?.frequencyDays}d · {afiLabel} rows
       </div>
 
       {showStart === nextSet?.id ? (
@@ -995,14 +1099,13 @@ function NextSetCard({ nextSet, config, showStart, setShowStart, crewMember, set
   );
 }
 
-function WeekProgress({ setsDone, totalSets, mode }) {
-  const pct = (setsDone / totalSets) * 100;
-  const modeLabel = mode === 'evens' ? 'Even Rows' : mode === 'odds' ? 'Odd Rows' : 'Every Row';
+function WeekProgress({ setsDone, totalSets }) {
+  const pct = totalSets > 0 ? (setsDone / totalSets) * 100 : 0;
   return (
     <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
       <div className="flex items-center justify-between mb-3">
         <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>
-          This Week · {modeLabel}
+          This Week
         </div>
         <div className="font-mono-time text-sm" style={{ color: '#FACC15' }}>
           {setsDone}/{totalSets}
@@ -1018,46 +1121,22 @@ function WeekProgress({ setsDone, totalSets, mode }) {
   );
 }
 
-function WeekView({ config, currentWeek, activeSet, photosByLocation, weekKey, onStart, onSetMode, onResetSet, onAddPhoto, onDeletePhoto }) {
+function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, weekKey, onStart, onResetSet, onAddPhoto, onDeletePhoto }) {
   const setsDone = Object.values(currentWeek.sets).filter(s => s.status === 'done').length;
   const [photoSetId, setPhotoSetId] = useState(null);
+  const sortedSets = [...config.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const dueById = {};
+  computeNextSets(config, schedule.lastCompleted).forEach(info => { dueById[info.set.id] = info; });
 
   return (
     <div className="space-y-4">
-      <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
-        <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>
-          This Week's Mode
-        </div>
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            { id: 'every', label: 'Every', sub: 'all rows' },
-            { id: 'evens', label: 'Evens', sub: 'AFI week' },
-            { id: 'odds', label: 'Odds', sub: 'AFI week' }
-          ].map(opt => (
-            <button
-              key={opt.id}
-              onClick={() => onSetMode(opt.id)}
-              className="py-3 rounded-xl text-center"
-              style={{
-                background: currentWeek.mode === opt.id ? '#FACC15' : '#0B0F08',
-                color: currentWeek.mode === opt.id ? '#0B0F08' : '#F5F7F0',
-                border: '1px solid #2A3525'
-              }}
-            >
-              <div className="font-semibold">{opt.label}</div>
-              <div className="text-xs opacity-70">{opt.sub}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-
       <div className="rounded-2xl overflow-hidden" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
         <div className="p-4 flex items-center justify-between" style={{ borderBottom: '1px solid #2A3525' }}>
           <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>
             Sets · {setsDone}/{config.sets.length} done
           </div>
         </div>
-        {config.sets.map(set => {
+        {sortedSets.map(set => {
           const status = currentWeek.sets[set.id];
           const isActive = activeSet?.setId === set.id;
           const isDone = status?.status === 'done';
@@ -1067,6 +1146,7 @@ function WeekView({ config, currentWeek, activeSet, photosByLocation, weekKey, o
               key={set.id}
               set={set}
               status={status}
+              dueInfo={dueById[set.id]}
               isActive={isActive}
               isDone={isDone}
               photoCount={photoCount}
@@ -1093,8 +1173,9 @@ function WeekView({ config, currentWeek, activeSet, photosByLocation, weekKey, o
   );
 }
 
-function SetRow({ set, status, isActive, isDone, photoCount, onStart, onReset, onOpenPhotos, canStart }) {
+function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, onStart, onReset, onOpenPhotos, canStart }) {
   const [expanded, setExpanded] = useState(false);
+  const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === (set.afiMode || 'every'))?.label || 'Every';
 
   return (
     <div style={{ borderBottom: '1px solid #2A3525' }}>
@@ -1125,9 +1206,19 @@ function SetRow({ set, status, isActive, isDone, photoCount, onStart, onReset, o
                 <ImageIcon className="w-3 h-3" /> {photoCount}
               </span>
             )}
+            {set.active === false && (
+              <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: '#2A3525', color: '#8C9683' }}>
+                inactive
+              </span>
+            )}
+            {!isActive && !isDone && dueInfo?.isDue && set.active !== false && (
+              <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ background: '#A3E635', color: '#0B0F08' }}>
+                due
+              </span>
+            )}
           </div>
           <div className="text-xs" style={{ color: '#8C9683' }}>
-            Rows {set.rows} · {set.gates} gates · {set.hours}h
+            Rows {set.rows} · {set.gates} gates · {set.hours}h · every {set.frequencyDays}d · {afiLabel} rows
           </div>
         </div>
         <button
@@ -1641,6 +1732,45 @@ function SetupView({ config, onSave }) {
     setLocal({ ...local, sets: newSets });
   }
 
+  function moveSet(id, direction) {
+    const sorted = [...local.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const idx = sorted.findIndex(s => s.id === id);
+    const swapIdx = idx + direction;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const a = sorted[idx];
+    const b = sorted[swapIdx];
+    const newSets = local.sets.map(s => {
+      if (s.id === a.id) return { ...s, order: b.order };
+      if (s.id === b.id) return { ...s, order: a.order };
+      return s;
+    });
+    setLocal({ ...local, sets: newSets });
+  }
+
+  function addSection() {
+    const maxId = local.sets.reduce((m, s) => Math.max(m, s.id), 0);
+    const maxOrder = local.sets.reduce((m, s) => Math.max(m, s.order ?? 0), 0);
+    const newSet = {
+      id: maxId + 1,
+      label: `Set ${maxId + 1}`,
+      rows: '1-1',
+      gates: 1,
+      hours: local.defaultSetHours || 8,
+      frequencyDays: 3,
+      afiMode: 'every',
+      order: maxOrder + 1,
+      active: true
+    };
+    setLocal({ ...local, sets: [...local.sets, newSet] });
+  }
+
+  function removeSet(id) {
+    if (!window.confirm('Remove this field section?')) return;
+    setLocal({ ...local, sets: local.sets.filter(s => s.id !== id) });
+  }
+
+  const sortedSets = [...local.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
   function addCrew() {
     if (crewInput.trim() && !local.crew.includes(crewInput.trim())) {
       setLocal({ ...local, crew: [...local.crew, crewInput.trim()] });
@@ -1733,30 +1863,31 @@ function SetupView({ config, onSave }) {
       </div>
 
       <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
-        <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>Set Hours</div>
-        <div className="text-xs mb-3" style={{ color: '#8C9683' }}>Planned hours per set. Short furrows can run shorter sets.</div>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>Field Sections</div>
+          <button
+            onClick={addSection}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold active:scale-95 transition-transform"
+            style={{ background: '#FACC15', color: '#0B0F08' }}
+          >
+            <Plus className="w-3 h-3" /> Add Section
+          </button>
+        </div>
+        <div className="text-xs mb-3" style={{ color: '#8C9683' }}>
+          Set each section's rows, gates, hours, and watering frequency. Use the arrows to match irrigation order.
+        </div>
         <div className="space-y-2">
-          {local.sets.map(set => (
-            <div key={set.id} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: '#0B0F08' }}>
-              <div className="font-mono-time text-sm w-8" style={{ color: '#FACC15' }}>{set.id}</div>
-              <div className="flex-1 text-sm">
-                <div>{set.label}</div>
-                <div className="text-xs" style={{ color: '#8C9683' }}>Rows {set.rows} · {set.gates} gates</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => updateSet(set.id, 'hours', Math.max(1, set.hours - 1))}
-                  className="w-8 h-8 rounded-lg"
-                  style={{ background: '#151A11' }}
-                >−</button>
-                <span className="font-mono-time w-10 text-center">{set.hours}h</span>
-                <button
-                  onClick={() => updateSet(set.id, 'hours', Math.min(24, set.hours + 1))}
-                  className="w-8 h-8 rounded-lg"
-                  style={{ background: '#151A11' }}
-                >+</button>
-              </div>
-            </div>
+          {sortedSets.map((set, idx) => (
+            <SectionEditorRow
+              key={set.id}
+              set={set}
+              isFirst={idx === 0}
+              isLast={idx === sortedSets.length - 1}
+              onUpdate={(field, value) => updateSet(set.id, field, value)}
+              onMoveUp={() => moveSet(set.id, -1)}
+              onMoveDown={() => moveSet(set.id, 1)}
+              onRemove={() => removeSet(set.id)}
+            />
           ))}
         </div>
       </div>
@@ -1768,6 +1899,178 @@ function SetupView({ config, onSave }) {
       >
         Save Changes
       </button>
+    </div>
+  );
+}
+
+function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown, onRemove }) {
+  const [expanded, setExpanded] = useState(false);
+  const parts = (set.rows || '').split(/[–\-]/).map(s => parseInt(s.trim()));
+  const startRow = isNaN(parts[0]) ? '' : parts[0];
+  const endRow = isNaN(parts[1]) ? '' : parts[1];
+  const afiMode = set.afiMode || 'every';
+  const isActive = set.active !== false;
+
+  function updateRange(which, value) {
+    const v = parseInt(value);
+    const newStart = which === 'start' ? (isNaN(v) ? 0 : v) : (startRow || 0);
+    const newEnd = which === 'end' ? (isNaN(v) ? 0 : v) : (endRow || 0);
+    onUpdate('rows', `${newStart}-${newEnd}`);
+  }
+
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: '#0B0F08', border: '1px solid #2A3525' }}>
+      <div className="flex items-center gap-2 p-3">
+        <div className="flex flex-col gap-1 flex-shrink-0">
+          <button
+            onClick={onMoveUp}
+            disabled={isFirst}
+            className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ background: '#151A11', color: isFirst ? '#2A3525' : '#8C9683' }}
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onMoveDown}
+            disabled={isLast}
+            className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ background: '#151A11', color: isLast ? '#2A3525' : '#8C9683' }}
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 min-w-0">
+          <input
+            value={set.label}
+            onChange={(e) => onUpdate('label', e.target.value)}
+            className="w-full bg-transparent font-semibold mb-0.5"
+            style={{ color: '#F5F7F0' }}
+          />
+          <div className="text-xs truncate" style={{ color: '#8C9683' }}>
+            Rows {set.rows} · {set.gates} gates · {set.hours}h · every {set.frequencyDays}d{!isActive ? ' · inactive' : ''}
+          </div>
+        </div>
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="p-2 rounded-lg flex-shrink-0"
+          style={{ color: '#8C9683' }}
+        >
+          {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="px-3 pb-3 pt-3 space-y-3" style={{ borderTop: '1px solid #2A3525' }}>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Start Row</label>
+              <input
+                type="number"
+                value={startRow}
+                onChange={(e) => updateRange('start', e.target.value)}
+                className="w-full p-2 rounded-lg font-mono-time"
+                style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>End Row</label>
+              <input
+                type="number"
+                value={endRow}
+                onChange={(e) => updateRange('end', e.target.value)}
+                className="w-full p-2 rounded-lg font-mono-time"
+                style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Gates</label>
+            <input
+              type="number"
+              value={set.gates}
+              onChange={(e) => onUpdate('gates', parseInt(e.target.value) || 0)}
+              className="w-full p-2 rounded-lg font-mono-time"
+              style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <label className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>Set Hours</label>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onUpdate('hours', Math.max(1, set.hours - 1))}
+                className="w-8 h-8 rounded-lg"
+                style={{ background: '#151A11' }}
+              >−</button>
+              <span className="font-mono-time w-10 text-center">{set.hours}h</span>
+              <button
+                onClick={() => onUpdate('hours', Math.min(24, set.hours + 1))}
+                className="w-8 h-8 rounded-lg"
+                style={{ background: '#151A11' }}
+              >+</button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <label className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>Watering Frequency</label>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onUpdate('frequencyDays', Math.max(1, (set.frequencyDays || 1) - 1))}
+                className="w-8 h-8 rounded-lg"
+                style={{ background: '#151A11' }}
+              >−</button>
+              <span className="font-mono-time w-20 text-center">every {set.frequencyDays}d</span>
+              <button
+                onClick={() => onUpdate('frequencyDays', Math.min(14, (set.frequencyDays || 1) + 1))}
+                className="w-8 h-8 rounded-lg"
+                style={{ background: '#151A11' }}
+              >+</button>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Pattern</label>
+            <div className="grid grid-cols-3 gap-2">
+              {AFI_MODE_OPTIONS.map(opt => (
+                <button
+                  key={opt.id}
+                  onClick={() => onUpdate('afiMode', opt.id)}
+                  className="py-2 rounded-lg text-center"
+                  style={{
+                    background: afiMode === opt.id ? '#FACC15' : '#151A11',
+                    color: afiMode === opt.id ? '#0B0F08' : '#F5F7F0',
+                    border: '1px solid #2A3525'
+                  }}
+                >
+                  <div className="font-semibold text-sm">{opt.label}</div>
+                  <div className="text-[10px] opacity-70">{opt.sub}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button
+            onClick={() => onUpdate('active', !isActive)}
+            className="w-full py-2 rounded-lg text-sm font-semibold active:scale-95 transition-transform"
+            style={{
+              background: isActive ? '#A3E635' : '#151A11',
+              color: isActive ? '#0B0F08' : '#8C9683',
+              border: '1px solid #2A3525'
+            }}
+          >
+            {isActive ? 'Active in rotation' : 'Inactive — tap to include in rotation'}
+          </button>
+
+          <button
+            onClick={onRemove}
+            className="w-full py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
+            style={{ background: '#151A11', color: '#8C9683', border: '1px solid #2A3525' }}
+          >
+            <Trash2 className="w-4 h-4" /> Remove Section
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1817,13 +2120,11 @@ function HistoryView({ currentWeekKey, config }) {
       {weeks.map(w => {
         const done = Object.values(w.data.sets).filter(s => s.status === 'done').length;
         const total = config.sets.length;
-        const modeLabel = w.data.mode === 'evens' ? 'Evens' : w.data.mode === 'odds' ? 'Odds' : 'Every Row';
         return (
           <div key={w.key} className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
             <div className="flex items-center justify-between mb-2">
               <div>
                 <div className="font-display text-xl">{getWeekRange(w.key)}</div>
-                <div className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>{modeLabel}</div>
               </div>
               <div className="text-right">
                 <div className="font-mono-time text-2xl" style={{ color: '#FACC15' }}>{done}/{total}</div>
@@ -1938,13 +2239,24 @@ function StageBanner({ config, setView }) {
   );
 }
 
-function ScheduleView({ config, setView }) {
-  const [mode, setMode] = useState('stages');
+function ScheduleView({ config, schedule, setView }) {
+  const [mode, setMode] = useState('plan');
 
   return (
     <div className="space-y-4">
       {/* Mode toggle */}
-      <div className="rounded-2xl p-1 grid grid-cols-3" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <div className="rounded-2xl p-1 grid grid-cols-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+        <button
+          onClick={() => setMode('plan')}
+          className="py-3 rounded-xl flex items-center justify-center gap-1 text-xs font-semibold"
+          style={{
+            background: mode === 'plan' ? '#FACC15' : 'transparent',
+            color: mode === 'plan' ? '#0B0F08' : '#8C9683'
+          }}
+        >
+          <ListChecks className="w-4 h-4" />
+          Plan
+        </button>
         <button
           onClick={() => setMode('stages')}
           className="py-3 rounded-xl flex items-center justify-center gap-1 text-xs font-semibold"
@@ -1980,9 +2292,93 @@ function ScheduleView({ config, setView }) {
         </button>
       </div>
 
+      {mode === 'plan' && <PlanView config={config} schedule={schedule} setView={setView} />}
       {mode === 'stages' && <StagesPanel config={config} setView={setView} />}
       {mode === 'calendar' && <CalendarPanel config={config} />}
       {mode === 'scouting' && <ScoutingPanel config={config} />}
+    </div>
+  );
+}
+
+function PlanView({ config, schedule, setView }) {
+  const activeSets = config.sets.filter(s => s.active !== false);
+  const stageInfo = getCurrentStage(config.plantingDate);
+  const plan = computeProjectedSchedule(config, schedule.lastCompleted, 14);
+  const todayKey = getDayKey(new Date());
+
+  if (activeSets.length === 0) {
+    return (
+      <div className="rounded-2xl p-8 text-center" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+        <ListChecks className="w-12 h-12 mx-auto mb-3" style={{ color: '#8C9683' }} />
+        <div className="font-display text-2xl mb-2">No Active Sections</div>
+        <div className="text-sm mb-4" style={{ color: '#8C9683' }}>
+          Add field sections and set their watering frequency in Setup.
+        </div>
+        <button
+          onClick={() => setView('setup')}
+          className="px-4 py-2 rounded-xl text-sm font-semibold"
+          style={{ background: '#FACC15', color: '#0B0F08' }}
+        >
+          Go to Setup
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {stageInfo && (
+        <div className="rounded-2xl p-4" style={{ background: '#151A11', border: `1px solid ${stageInfo.stage.accent}` }}>
+          <div className="text-xs uppercase tracking-[0.2em] mb-1" style={{ color: stageInfo.stage.accent }}>
+            Current Stage · {stageInfo.stage.name}
+          </div>
+          <div className="text-sm" style={{ color: '#8C9683' }}>
+            Recommended cadence: <span style={{ color: '#F5F7F0' }}>{stageInfo.stage.frequency}</span>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+        <div className="text-xs uppercase tracking-[0.2em] mb-1" style={{ color: '#8C9683' }}>Upcoming Rotation</div>
+        <div className="text-xs" style={{ color: '#8C9683' }}>
+          Projected from each section's frequency and order. Actual order shifts if sets run early, late, or out of turn.
+        </div>
+      </div>
+
+      <div className="rounded-2xl overflow-hidden" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+        {plan.map((p, i) => {
+          const isToday = getDayKey(p.date) === todayKey;
+          const dateLabel = p.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+          return (
+            <div key={i} className="p-3 flex items-center gap-3" style={{ borderBottom: i < plan.length - 1 ? '1px solid #2A3525' : 'none' }}>
+              <div className="w-20 flex-shrink-0">
+                <div className="text-xs font-semibold" style={{ color: isToday ? '#FACC15' : '#F5F7F0' }}>
+                  {isToday ? 'Today' : dateLabel}
+                </div>
+                {isToday && <div className="text-[10px]" style={{ color: '#8C9683' }}>{dateLabel}</div>}
+              </div>
+              {p.set ? (
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold">{p.set.label}</div>
+                  <div className="text-xs" style={{ color: '#8C9683' }}>
+                    Rows {p.set.rows} · {p.set.hours}h · every {p.set.frequencyDays}d
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 text-sm" style={{ color: '#8C9683' }}>—</div>
+              )}
+              {p.set && (
+                <div className="text-xs px-2 py-1 rounded-full font-semibold flex-shrink-0" style={{
+                  background: p.isDue ? '#A3E635' : '#2A3525',
+                  color: p.isDue ? '#0B0F08' : '#8C9683'
+                }}>
+                  {p.isDue ? 'Due' : 'Planned'}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
