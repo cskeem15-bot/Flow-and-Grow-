@@ -7,6 +7,10 @@ import {
   Image as ImageIcon, Send, ListChecks, BellOff,
   Sprout, Eye, TrendingUp, Sun
 } from 'lucide-react';
+import {
+  registerServiceWorker, isPushSupported, getCurrentSubscription,
+  enablePushNotifications, disablePushNotifications, broadcastPush
+} from './lib/push.js';
 
 // ============================================================
 // STORAGE
@@ -417,6 +421,7 @@ export default function App() {
   }
 
   useEffect(() => { loadFonts(); }, []);
+  useEffect(() => { registerServiceWorker(); }, []);
 
   useEffect(() => {
     const i = setInterval(() => setTick(t => t + 1), 1000);
@@ -511,6 +516,12 @@ export default function App() {
       startedBy: crewMember
     };
     await saveWeek(newWeek);
+
+    const set = config.sets.find(s => s.id === setId);
+    broadcastPush({
+      title: `${set?.label || 'Set'} started`,
+      body: `${crewMember} started irrigating · planned ${newActive.plannedHours}h`
+    });
   }
 
   async function markRowAdvanced(rowNumber) {
@@ -552,6 +563,13 @@ export default function App() {
     };
     setSchedule(newSchedule);
     await setValue('schedule', newSchedule);
+
+    const set = config.sets.find(s => s.id === activeSet.setId);
+    const hrs = ((completedAt - activeSet.startedAt) / 3600000).toFixed(1);
+    broadcastPush({
+      title: `${set?.label || 'Set'} completed`,
+      body: `${crewMember || activeSet.startedBy} finished after ${hrs}h`
+    });
   }
 
   async function cancelActive() {
@@ -1892,6 +1910,8 @@ function SetupView({ config, onSave }) {
         </div>
       </div>
 
+      <NotificationsCard />
+
       <button
         onClick={save}
         className="w-full py-4 rounded-xl font-bold text-lg glow-amber active:scale-95 transition-transform"
@@ -1899,6 +1919,74 @@ function SetupView({ config, onSave }) {
       >
         Save Changes
       </button>
+    </div>
+  );
+}
+
+function NotificationsCard() {
+  const configured = !!import.meta.env.VITE_VAPID_PUBLIC_KEY;
+  const [supported] = useState(() => isPushSupported());
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!configured || !supported) return;
+    getCurrentSubscription().then(sub => setEnabled(!!sub));
+  }, [configured, supported]);
+
+  async function toggle() {
+    setError('');
+    setBusy(true);
+    try {
+      if (enabled) {
+        await disablePushNotifications();
+        setEnabled(false);
+      } else {
+        await enablePushNotifications();
+        setEnabled(true);
+      }
+    } catch (e) {
+      setError(e.message || 'Something went wrong.');
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>Notifications</div>
+      <div className="text-sm mb-3" style={{ color: '#8C9683' }}>
+        Get alerts on this device for set timers finishing, sections due to water, crew activity, and daily reminders — even when the app is closed.
+      </div>
+
+      {!configured ? (
+        <div className="p-3 rounded-xl text-sm" style={{ background: '#0B0F08', color: '#8C9683', border: '1px solid #2A3525' }}>
+          Notifications aren't set up for this app yet. Ask Claude Code to finish the notification setup.
+        </div>
+      ) : !supported ? (
+        <div className="p-3 rounded-xl text-sm" style={{ background: '#0B0F08', color: '#8C9683', border: '1px solid #2A3525' }}>
+          This browser doesn't support notifications. On iPhone, add this app to your Home Screen first, then try again from there.
+        </div>
+      ) : (
+        <>
+          <button
+            onClick={toggle}
+            disabled={busy}
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold active:scale-95 transition-transform"
+            style={{
+              background: enabled ? '#A3E635' : '#151A11',
+              color: enabled ? '#0B0F08' : '#8C9683',
+              border: '1px solid #2A3525'
+            }}
+          >
+            {enabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+            {busy ? 'Working…' : enabled ? 'Notifications On' : 'Turn On Notifications'}
+          </button>
+          {error && (
+            <div className="text-xs mt-2" style={{ color: '#FACC15' }}>{error}</div>
+          )}
+        </>
+      )}
     </div>
   );
 }

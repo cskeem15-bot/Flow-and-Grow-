@@ -23,14 +23,20 @@ This is an irrigation tracking app for a Utah corn maze farm. The user is NOT a 
 ├── .env                  ← local env (gitignored), user creates from .env.example
 ├── .env.example
 ├── .gitignore
+├── public/
+│   └── sw.js             ← service worker (receives push notifications)
 ├── src/
-│   ├── App.jsx           ← the entire app, ~3600 lines, single component file
+│   ├── App.jsx           ← the entire app, single component file
 │   ├── main.jsx          ← entry point, attaches storage to window
 │   ├── index.css         ← Tailwind + global styles
 │   └── lib/
-│       └── storage.js    ← Supabase adapter
+│       ├── storage.js    ← Supabase adapter
+│       └── push.js       ← push notification helpers (subscribe, broadcast)
 └── supabase/
-    └── schema.sql        ← one-time database setup
+    ├── schema.sql        ← one-time database setup + notification cron
+    └── functions/
+        └── notify/
+            └── index.ts  ← Edge Function that sends push notifications
 ```
 
 ## How the storage works
@@ -48,8 +54,18 @@ Storage keys follow these prefixes:
 - `point:<id>` — scouting monitoring points
 - `measurement:<id>` — growth measurements
 - `scoutphoto:<id>` — scouting photos
+- `push:<deviceId>` — a device's Web Push subscription (JSON), written by `src/lib/push.js`
+- `notifystate` — dedup state for the `notify` Edge Function (last reminder date, last "due" notification per set, last timer notification), so it doesn't repeat alerts
 
 When making changes to data shape, update the relevant section in App.jsx — there's no separate schema definition outside that file.
+
+## Push notifications
+
+`src/lib/push.js` registers `public/sw.js` as a service worker and manages each device's subscription (stored at `push:<deviceId>`). `broadcastPush()` calls the `notify` Edge Function (`supabase/functions/notify/index.ts`) to actually send pushes via VAPID/web-push.
+
+- **Crew activity** (set started/completed) — triggered directly from `App.jsx` via `broadcastPush()`.
+- **Set timer done**, **section due to water**, and **daily reminders** — handled by the `notify` function's `check` action, which is meant to run every 10 minutes via `pg_cron` (see the "Push notification scheduling" block in `supabase/schema.sql`). It mirrors `migrateConfig`/`computeNextSets` from `App.jsx`, so keep that logic in sync if the schedule model changes.
+- Requires `VITE_VAPID_PUBLIC_KEY` (frontend env var) plus `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` (Edge Function secrets). See README "Step 3 — Turn on notifications".
 
 ## Common tasks
 

@@ -55,6 +55,62 @@ Keep these two values handy for Step 2.
 
 ---
 
+## Step 3 — Turn on notifications (optional)
+
+This lets the crew get phone alerts — even when the app is closed — for things like:
+- A set's timer finishing
+- A field section becoming due to water
+- Crew starting or finishing a set
+- Daily reminders
+
+It takes about 15 minutes, only needs to be done once, and is completely optional — the app works fine without it.
+
+> **iPhone users:** do the "Add to your phone's home screen" step below **first**. Notifications only work from the home-screen app icon, not from a regular Safari tab.
+
+### 3a. Add your VAPID secrets to Supabase
+
+VAPID keys are the credentials that let your app send push notifications. A key pair was generated for you when this feature was set up:
+- The **public** key is already in `.env.example` and your local `.env` as `VITE_VAPID_PUBLIC_KEY`
+- The **private** key is saved as a comment in your local `.env` file (look for `VAPID_PRIVATE_KEY`) — keep it secret, don't share it or put it in Vercel
+
+In your Supabase project:
+1. Go to **Edge Functions → Secrets** (or **Project Settings → Edge Functions**)
+2. Add three secrets:
+   - `VAPID_PUBLIC_KEY` = (the value of `VITE_VAPID_PUBLIC_KEY` from your `.env`)
+   - `VAPID_PRIVATE_KEY` = (the value from the `VAPID_PRIVATE_KEY` comment in your `.env`)
+   - `VAPID_SUBJECT` = `mailto:your-email@example.com` (any email — push services use this as a contact)
+
+### 3b. Deploy the notification function
+
+1. In Supabase, go to **Edge Functions → Deploy a new function**
+2. Name it exactly `notify`
+3. Open `supabase/functions/notify/index.ts` from this project, copy the entire file, and paste it into the function editor
+4. Deploy
+
+### 3c. Schedule the automatic checks
+
+This tells Supabase to check every 10 minutes for timers finishing and sections becoming due.
+
+1. Click **SQL Editor → New query**
+2. Open `supabase/schema.sql` and find the **"Push notification scheduling"** block near the bottom
+3. Copy that block into the SQL editor
+4. Replace the placeholders:
+   - `https://xxxxxxx.supabase.co/functions/v1/notify` → your Project URL + `/functions/v1/notify`
+   - both `your-anon-public-key-here` → your anon public key (same one from Step 1)
+5. Click **Run**
+
+### 3d. Add the public key to Vercel
+
+1. Go to your Vercel project → **Settings → Environment Variables**
+2. Add `VITE_VAPID_PUBLIC_KEY` = (same value as in your `.env`)
+3. Go to **Deployments**, click **⋯** on the latest deployment, and choose **Redeploy**
+
+### 3e. Turn it on for each phone
+
+On each crew member's phone, open the app (iPhone: use the home-screen icon), go to **Setup → Notifications**, and tap **Turn On Notifications**. Each phone needs to do this once.
+
+---
+
 ## Optional — Add to your phone's home screen
 
 On iPhone:
@@ -120,11 +176,14 @@ Supabase → Database → Backups. Free plan keeps daily backups for 7 days. You
 
 If you want to make changes:
 
-- `src/App.jsx` — the entire app (all UI, all logic, ~3,600 lines)
+- `src/App.jsx` — the entire app (all UI, all logic)
 - `src/lib/storage.js` — the Supabase adapter (translates app storage calls to database queries)
+- `src/lib/push.js` — push notification helpers (subscribe/unsubscribe, sending alerts)
+- `public/sw.js` — service worker that receives push notifications
 - `src/main.jsx` — entry point (probably won't touch)
 - `src/index.css` — global styles (probably won't touch)
-- `supabase/schema.sql` — database structure
+- `supabase/schema.sql` — database structure + notification scheduling
+- `supabase/functions/notify/index.ts` — Edge Function that sends push notifications
 - `tailwind.config.js`, `postcss.config.js`, `vite.config.js` — build configs (don't touch)
 
 The vast majority of changes will be in `App.jsx`. Just ask Claude Code: *"In App.jsx, change X to do Y."*

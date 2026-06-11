@@ -23,3 +23,30 @@ create policy "Allow all operations"
   for all
   using (true)
   with check (true);
+
+-- ============================================================
+-- Push notification scheduling (optional)
+--
+-- Run this AFTER you've deployed the "notify" Edge Function and added
+-- your VAPID secrets (see README "Turn on notifications"). Replace the
+-- two placeholders below with your project's values, then run this block.
+-- ============================================================
+
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+select cron.schedule(
+  'irrigation-notify-check',
+  '*/10 * * * *', -- every 10 minutes
+  $$
+  select net.http_post(
+    url := 'https://xxxxxxx.supabase.co/functions/v1/notify',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer your-anon-public-key-here',
+      'apikey', 'your-anon-public-key-here'
+    ),
+    body := jsonb_build_object('action', 'check')
+  );
+  $$
+);
