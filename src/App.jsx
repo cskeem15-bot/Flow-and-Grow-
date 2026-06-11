@@ -2454,7 +2454,18 @@ function PlanView({ config, schedule, setView }) {
 
   return (
     <div className="space-y-4">
-      {stageInfo && (
+      {stageInfo && stageInfo.status === 'pre-planting' && (
+        <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+          <div className="text-xs uppercase tracking-[0.2em] mb-1" style={{ color: '#FACC15' }}>
+            Planting in {stageInfo.daysUntil}d
+          </div>
+          <div className="text-sm" style={{ color: '#8C9683' }}>
+            Stage tracking will kick in once your planting date arrives.
+          </div>
+        </div>
+      )}
+
+      {stageInfo && stageInfo.stage && (
         <div className="rounded-2xl p-4" style={{ background: '#151A11', border: `1px solid ${stageInfo.stage.accent}` }}>
           <div className="text-xs uppercase tracking-[0.2em] mb-1" style={{ color: stageInfo.stage.accent }}>
             Current Stage · {stageInfo.stage.name}
