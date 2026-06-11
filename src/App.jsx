@@ -1306,39 +1306,58 @@ function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, onStart, o
       </div>
       {expanded && isDone && status && (
         <div className="px-4 pb-4 pt-1 text-sm" style={{ color: '#8C9683' }}>
-          <div className="rounded-xl p-3" style={{ background: '#0B0F08' }}>
-            <div>By <span style={{ color: '#F5F7F0' }}>{status.completedBy}</span></div>
-            <div>Ran {status.actualHours?.toFixed(1)}h</div>
-            <div>{formatRelative(status.completedAt)}</div>
-            {status.notes && <div className="mt-2 italic">"{status.notes}"</div>}
+          <SetLogDetails set={set} status={status} />
+          <button
+            onClick={onReset}
+            className="mt-3 text-xs flex items-center gap-1"
+            style={{ color: '#F59E0B' }}
+          >
+            <RotateCcw className="w-3 h-3" /> Reset this set
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
-            {status.rowAdvances && Object.keys(status.rowAdvances).length > 0 && (() => {
-              const setRows = getSetRowNumbers(set);
-              const stats = computeAdvanceStats(status.rowAdvances, status.startedAt, setRows);
-              const tailSoakMs = status.completedAt - (status.startedAt + stats.maxMs);
-              return (
-                <div className="mt-3 pt-3" style={{ borderTop: '1px solid #2A3525' }}>
-                  <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: '#FACC15' }}>
-                    Advance Data
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>Rows tracked: <span className="font-mono-time" style={{ color: '#F5F7F0' }}>{stats.count}/{stats.total}</span></div>
-                    <div>Avg advance: <span className="font-mono-time" style={{ color: '#F5F7F0' }}>{formatMinSec(stats.avgMs)}</span></div>
-                    <div>Fastest: <span className="font-mono-time" style={{ color: '#A3E635' }}>Row {stats.advances.find(a => a.elapsed === stats.minMs)?.row} · {formatMinSec(stats.minMs)}</span></div>
-                    <div>Slowest: <span className="font-mono-time" style={{ color: '#F59E0B' }}>Row {stats.advances.find(a => a.elapsed === stats.maxMs)?.row} · {formatMinSec(stats.maxMs)}</span></div>
-                    <div className="col-span-2">Min tail soak: <span className="font-mono-time" style={{ color: '#A3E635' }}>{formatMinSec(tailSoakMs)}</span></div>
-                  </div>
-                </div>
-              );
-            })()}
+// Detailed log of one section's run: who/when started and finished,
+// crew notes, and tail-water advance timing. Shared by the current
+// week's expandable rows and the Log tab's history.
+function SetLogDetails({ set, status }) {
+  const setRows = getSetRowNumbers(set);
+  const hasAdvances = status.rowAdvances && Object.keys(status.rowAdvances).length > 0;
+  const stats = hasAdvances ? computeAdvanceStats(status.rowAdvances, status.startedAt, setRows) : null;
+  const tailSoakMs = stats && status.completedAt != null ? status.completedAt - (status.startedAt + stats.maxMs) : null;
 
-            <button
-              onClick={onReset}
-              className="mt-3 text-xs flex items-center gap-1"
-              style={{ color: '#F59E0B' }}
-            >
-              <RotateCcw className="w-3 h-3" /> Reset this set
-            </button>
+  return (
+    <div className="rounded-xl p-3" style={{ background: '#0B0F08' }}>
+      {status.startedBy && (
+        <div>
+          Started by <span style={{ color: '#F5F7F0' }}>{status.startedBy}</span>
+          {status.startedAt && <> · {formatTimeShort(new Date(status.startedAt))}</>}
+        </div>
+      )}
+      {status.completedBy && (
+        <div>
+          Completed by <span style={{ color: '#F5F7F0' }}>{status.completedBy}</span>
+          {status.completedAt && <> · {formatTimeShort(new Date(status.completedAt))}</>}
+        </div>
+      )}
+      {status.actualHours != null && <div>Ran {status.actualHours.toFixed(1)}h</div>}
+      {status.completedAt && <div>{formatRelative(status.completedAt)}</div>}
+      {status.notes && <div className="mt-2 italic">"{status.notes}"</div>}
+
+      {hasAdvances && (
+        <div className="mt-3 pt-3" style={{ borderTop: '1px solid #2A3525' }}>
+          <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: '#FACC15' }}>
+            Advance Data
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>Rows tracked: <span className="font-mono-time" style={{ color: '#F5F7F0' }}>{stats.count}/{stats.total}</span></div>
+            <div>Avg advance: <span className="font-mono-time" style={{ color: '#F5F7F0' }}>{formatMinSec(stats.avgMs)}</span></div>
+            <div>Fastest: <span className="font-mono-time" style={{ color: '#A3E635' }}>Row {stats.advances.find(a => a.elapsed === stats.minMs)?.row} · {formatMinSec(stats.minMs)}</span></div>
+            <div>Slowest: <span className="font-mono-time" style={{ color: '#F59E0B' }}>Row {stats.advances.find(a => a.elapsed === stats.maxMs)?.row} · {formatMinSec(stats.maxMs)}</span></div>
+            <div className="col-span-2">Min tail soak: <span className="font-mono-time" style={{ color: '#A3E635' }}>{formatMinSec(tailSoakMs)}</span></div>
           </div>
         </div>
       )}
@@ -2244,29 +2263,67 @@ function HistoryView({ currentWeekKey, config }) {
 
   return (
     <div className="space-y-3">
-      {weeks.map(w => {
-        const done = Object.values(w.data.sets).filter(s => s.status === 'done').length;
-        const total = config.sets.length;
-        return (
-          <div key={w.key} className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
-            <div className="flex items-center justify-between mb-2">
-              <div>
-                <div className="font-display text-xl">{getWeekRange(w.key)}</div>
-              </div>
-              <div className="text-right">
-                <div className="font-mono-time text-2xl" style={{ color: '#FACC15' }}>{done}/{total}</div>
-                <div className="text-xs" style={{ color: '#8C9683' }}>sets done</div>
-              </div>
+      {weeks.map(w => <HistoryWeekCard key={w.key} week={w} config={config} />)}
+    </div>
+  );
+}
+
+function HistoryWeekCard({ week, config }) {
+  const [expanded, setExpanded] = useState(false);
+  const done = Object.values(week.data.sets).filter(s => s.status === 'done').length;
+  const total = config.sets.length;
+  const sortedSets = [...config.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <button onClick={() => setExpanded(!expanded)} className="w-full p-5 text-left">
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-display text-xl">{getWeekRange(week.key)}</div>
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <div className="font-mono-time text-2xl" style={{ color: '#FACC15' }}>{done}/{total}</div>
+              <div className="text-xs" style={{ color: '#8C9683' }}>sets done</div>
             </div>
-            <div className="h-1 rounded-full overflow-hidden mt-3" style={{ background: '#0B0F08' }}>
-              <div className="h-full" style={{
-                width: `${(done / total) * 100}%`,
-                background: done === total ? '#A3E635' : '#FACC15'
-              }}></div>
-            </div>
+            {expanded ? <ChevronUp className="w-5 h-5" style={{ color: '#8C9683' }} /> : <ChevronDown className="w-5 h-5" style={{ color: '#8C9683' }} />}
           </div>
-        );
-      })}
+        </div>
+        <div className="h-1 rounded-full overflow-hidden mt-3" style={{ background: '#0B0F08' }}>
+          <div className="h-full" style={{
+            width: `${(done / total) * 100}%`,
+            background: done === total ? '#A3E635' : '#FACC15'
+          }}></div>
+        </div>
+      </button>
+
+      {expanded && (
+        <div style={{ borderTop: '1px solid #2A3525' }}>
+          {sortedSets.map(set => {
+            const status = week.data.sets[set.id];
+            return (
+              <div key={set.id} className="p-4" style={{ borderBottom: '1px solid #2A3525' }}>
+                <div className="font-semibold mb-2 flex items-center gap-2 flex-wrap">
+                  {set.label}
+                  {!status && (
+                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: '#2A3525', color: '#8C9683' }}>
+                      not run
+                    </span>
+                  )}
+                  {status?.status === 'active' && (
+                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: '#A3E635', color: '#0B0F08' }}>
+                      left running
+                    </span>
+                  )}
+                </div>
+                {status ? (
+                  <SetLogDetails set={set} status={status} />
+                ) : (
+                  <div className="text-sm" style={{ color: '#8C9683' }}>No activity recorded.</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
