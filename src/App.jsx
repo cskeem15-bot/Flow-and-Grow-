@@ -1364,14 +1364,88 @@ function NextSetCard({ nextSet, dueInfo, config, schedule, weekKey, showStart, s
 // delay passes (or jump back in early with "Resume Now").
 function PostponeCard({ schedule, onSetPostponed }) {
   const [expanded, setExpanded] = useState(false);
+  const [customMode, setCustomMode] = useState(false);
+  const [customDate, setCustomDate] = useState('');
   const postponedUntil = schedule.postponedUntil;
   const isPostponed = postponedUntil && postponedUntil > Date.now();
+
+  function close() {
+    setExpanded(false);
+    setCustomMode(false);
+    setCustomDate('');
+  }
+
+  function applyPreset(days) {
+    onSetPostponed(Date.now() + days * DAY_MS);
+    close();
+  }
+
+  function applyCustomDate() {
+    if (!customDate) return;
+    const until = new Date(`${customDate}T00:00:00`);
+    if (isNaN(until.getTime()) || until.getTime() <= Date.now()) return;
+    onSetPostponed(until.getTime());
+    close();
+  }
+
+  const presetGrid = (
+    <div className="grid grid-cols-3 gap-2 mb-2">
+      {[1, 2, 3, 5, 7].map(days => (
+        <button
+          key={days}
+          onClick={() => applyPreset(days)}
+          className="py-3 rounded-xl text-sm font-semibold"
+          style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+        >
+          +{days} day{days > 1 ? 's' : ''}
+        </button>
+      ))}
+      <button
+        onClick={() => setCustomMode(true)}
+        className="py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1"
+        style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+      >
+        <Calendar className="w-3.5 h-3.5" /> Custom
+      </button>
+    </div>
+  );
+
+  const customForm = (
+    <div className="mb-2">
+      <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Resume On</label>
+      <input
+        type="date"
+        value={customDate}
+        min={getDayKey()}
+        onChange={(e) => setCustomDate(e.target.value)}
+        className="w-full p-3 rounded-xl mb-2 font-mono-time"
+        style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => setCustomMode(false)}
+          className="py-3 rounded-xl text-sm font-semibold"
+          style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#8C9683' }}
+        >
+          Back
+        </button>
+        <button
+          onClick={applyCustomDate}
+          disabled={!customDate}
+          className="py-3 rounded-xl text-sm font-semibold"
+          style={{ background: '#FACC15', color: '#0B0F08', opacity: customDate ? 1 : 0.5 }}
+        >
+          Set Date
+        </button>
+      </div>
+    </div>
+  );
 
   if (isPostponed) {
     const until = new Date(postponedUntil);
     return (
-      <div className="rounded-2xl p-4 flex items-center justify-between gap-3" style={{ background: '#151A11', border: '1px solid #F59E0B' }}>
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #F59E0B' }}>
+        <div className="flex items-center gap-3 mb-3">
           <CloudRain className="w-5 h-5 flex-shrink-0" style={{ color: '#F59E0B' }} />
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-[0.2em] mb-0.5" style={{ color: '#F59E0B' }}>
@@ -1382,14 +1456,38 @@ function PostponeCard({ schedule, onSetPostponed }) {
             </div>
           </div>
         </div>
-        <button
-          onClick={() => onSetPostponed(null)}
-          className="px-3 py-2 rounded-xl text-sm font-semibold flex-shrink-0 flex items-center gap-1"
-          style={{ background: '#2A3525', color: '#F5F7F0' }}
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          Resume Now
-        </button>
+        {expanded ? (
+          customMode ? customForm : (
+            <>
+              {presetGrid}
+              <button
+                onClick={close}
+                className="w-full py-2 rounded-xl text-sm"
+                style={{ color: '#8C9683' }}
+              >
+                Cancel
+              </button>
+            </>
+          )
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setExpanded(true)}
+              className="py-2 rounded-xl text-sm font-semibold"
+              style={{ background: '#2A3525', color: '#F5F7F0' }}
+            >
+              Change Date
+            </button>
+            <button
+              onClick={() => onSetPostponed(null)}
+              className="py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-1"
+              style={{ background: '#2A3525', color: '#F5F7F0' }}
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Resume Now
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -1415,25 +1513,18 @@ function PostponeCard({ schedule, onSetPostponed }) {
       <div className="text-xs mb-3" style={{ color: '#8C9683' }}>
         Push back the next set if it rained or the soil's still wet. The rotation picks back up on its own once the delay passes.
       </div>
-      <div className="grid grid-cols-3 gap-2 mb-2">
-        {[1, 2, 3].map(days => (
+      {customMode ? customForm : (
+        <>
+          {presetGrid}
           <button
-            key={days}
-            onClick={() => { onSetPostponed(Date.now() + days * DAY_MS); setExpanded(false); }}
-            className="py-3 rounded-xl text-sm font-semibold"
-            style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+            onClick={close}
+            className="w-full py-2 rounded-xl text-sm"
+            style={{ color: '#8C9683' }}
           >
-            +{days} day{days > 1 ? 's' : ''}
+            Cancel
           </button>
-        ))}
-      </div>
-      <button
-        onClick={() => setExpanded(false)}
-        className="w-full py-2 rounded-xl text-sm"
-        style={{ color: '#8C9683' }}
-      >
-        Cancel
-      </button>
+        </>
+      )}
     </div>
   );
 }

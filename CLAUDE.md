@@ -75,7 +75,7 @@ The field runs through its active sections back-to-back, in `order`, each for it
 `schedule.postponedUntil` (ms timestamp, or `null`) is a single field-wide "don't start anything before this time" floor, set via `setPostponedUntil()` in `App()` and rendered by `PostponeCard` on the Now tab.
 
 - `computeRotationTimeline` clamps its starting cursor to `postponedUntil` when that's later than `now`, which pushes the whole remaining timeline back — so the Plan tab, "Up Next" card, and due badges all reflect the delay automatically.
-- It auto-expires: once real time passes `postponedUntil`, it's ignored and the schedule behaves normally again — no need to clear it. `PostponeCard` also offers "Resume Now" to clear it early.
+- It auto-expires: once real time passes `postponedUntil`, it's ignored and the schedule behaves normally again — no need to clear it. `PostponeCard` offers "+1/2/3/5/7 days" presets, a "Custom" date picker (sets `postponedUntil` to midnight local time on the chosen day), "Change Date" to pick a new value while already postponed, and "Resume Now" to clear it early.
 - `supabase/functions/notify/index.ts`'s `checkSectionsDue()` also respects `postponedUntil` so the "due to water" push doesn't fire during a postponement.
 
 ## Authentication & permissions
