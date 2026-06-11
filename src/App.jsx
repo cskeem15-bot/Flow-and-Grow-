@@ -92,6 +92,7 @@ const DEFAULT_CONFIG = {
   furrowLength: 623,
   gatesPerSet: 35,
   defaultSetHours: 8,
+  cycleDays: 7,
   plantingDate: null,
   sets: Array.from({ length: 11 }, (_, i) => {
     const startRow = i * 35 + 1;
@@ -102,7 +103,6 @@ const DEFAULT_CONFIG = {
       rows: `${startRow}–${endRow}`,
       gates: endRow - startRow + 1,
       hours: 8,
-      frequencyDays: 3,
       afiMode: 'every',
       order: i + 1,
       active: true
@@ -335,6 +335,17 @@ function formatRelative(ts) {
   return `${days}d ago`;
 }
 
+// "Today" / "Tomorrow" / "Mon, Jan 5" for plan-tab timeline entries.
+function formatDayLabel(date) {
+  const todayKey = getDayKey(new Date());
+  const dayKey = getDayKey(date);
+  if (dayKey === todayKey) return 'Today';
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (dayKey === getDayKey(tomorrow)) return 'Tomorrow';
+  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 function loadFonts() {
   if (document.getElementById('irr-fonts')) return;
   const link = document.createElement('link');
@@ -344,18 +355,17 @@ function loadFonts() {
   document.head.appendChild(link);
 }
 
-// Fills in defaults for older saved configs so every set has the new
-// per-set scheduling fields (frequency, AFI mode, order, active flag).
+// Fills in defaults for older saved configs: a field-wide cycle length plus
+// per-set scheduling fields (AFI mode, order, active flag).
 function migrateConfig(c) {
   if (!c) return c;
   const sets = (c.sets || []).map((s, i) => ({
-    frequencyDays: 3,
     afiMode: 'every',
     order: i + 1,
     active: true,
     ...s
   }));
-  return { ...c, sets };
+  return { cycleDays: 7, ...c, sets };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -381,50 +391,101 @@ function resolveAfiMode(set, config, schedule, weekKey) {
   return schedule?.afiOverrides?.[weekKey] || computeAutoAfiMode(config.plantingDate, weekKey);
 }
 
-// Ranks active field sections by their own watering frequency/order so the
-// app can recommend what to run next, independent of a fixed weekly cycle.
-function computeNextSets(config, lastCompleted = {}, now = Date.now()) {
-  const activeSets = (config.sets || []).filter(s => s.active !== false);
-  return activeSets
-    .map(set => {
-      const last = lastCompleted[set.id] || null;
-      const freqMs = (set.frequencyDays || 1) * DAY_MS;
-      const dueAt = last ? last + freqMs : 0;
-      const isDue = now >= dueAt;
-      let dueLabel;
-      if (!last) {
-        dueLabel = 'Never watered';
-      } else if (isDue) {
-        const daysSince = Math.floor((now - last) / DAY_MS);
-        dueLabel = daysSince <= 0 ? 'Due now' : `Due now · last watered ${daysSince}d ago`;
-      } else {
-        const daysUntil = Math.ceil((dueAt - now) / DAY_MS);
-        dueLabel = `Due in ${daysUntil}d`;
-      }
-      return { set, lastCompleted: last, dueAt, isDue, dueLabel };
-    })
-    .sort((a, b) => {
-      if (a.isDue !== b.isDue) return a.isDue ? -1 : 1;
-      if (a.dueAt !== b.dueAt) return a.dueAt - b.dueAt;
-      return (a.set.order ?? 0) - (b.set.order ?? 0);
+// Builds a forward-looking timeline of which active section runs when. The
+// field runs through its sections back-to-back in `order`, each for its own
+// `hours`; once every active section has run since section #1 (lowest order)
+// last finished, the whole rotation idles until `cycleDays` days after that
+// finish before starting over from section #1.
+function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), untilMs = now) {
+  const activeSets = (config.sets || []).filter(s => s.active !== false)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  if (activeSets.length === 0) return [];
+
+  const cycleMs = (config.cycleDays || 7) * DAY_MS;
+  const firstSet = activeSets[0];
+  const firstSetLast = lastCompleted[firstSet.id] || null;
+
+  let cursor;
+  let startIdx;
+  if (firstSetLast == null) {
+    cursor = now;
+    startIdx = 0;
+  } else {
+    const idx = activeSets.findIndex(s => {
+      const lc = lastCompleted[s.id];
+      return lc == null || lc < firstSetLast;
     });
+    if (idx === -1) {
+      cursor = firstSetLast + cycleMs;
+      startIdx = 0;
+    } else {
+      cursor = now;
+      startIdx = idx;
+    }
+  }
+
+  const timeline = [];
+  let idx = startIdx;
+  let rotationAnchor = startIdx === 0 ? null : firstSetLast;
+  let safety = 0;
+  while ((timeline.length === 0 || cursor < untilMs) && safety < 2000) {
+    safety++;
+    const set = activeSets[idx];
+    const startAt = cursor;
+    const endAt = startAt + (set.hours || 1) * 3600000;
+    if (idx === 0 && rotationAnchor === null) rotationAnchor = startAt;
+    timeline.push({ set, startAt, endAt });
+    cursor = endAt;
+    idx++;
+    if (idx >= activeSets.length) {
+      idx = 0;
+      cursor = Math.max(cursor, rotationAnchor + cycleMs);
+      rotationAnchor = null;
+    }
+  }
+  return timeline;
 }
 
-// Projects which section would run on each upcoming day, assuming one
-// section is run per day in due/order priority and the rotation continues.
-function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDate = new Date()) {
-  const sim = { ...lastCompleted };
-  const plan = [];
-  for (let i = 0; i < days; i++) {
-    const date = new Date(startDate);
-    date.setDate(date.getDate() + i);
-    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-    const ranked = computeNextSets(config, sim, dayStart);
-    const top = ranked[0] || null;
-    plan.push({ date, set: top?.set || null, isDue: top?.isDue ?? false, dueLabel: top?.dueLabel ?? null });
-    if (top) sim[top.set.id] = dayStart;
+// Ranks active field sections by when the rotation timeline says they'll
+// next run, so the app can recommend what to run next.
+function computeNextSets(config, lastCompleted = {}, now = Date.now()) {
+  const activeSets = (config.sets || []).filter(s => s.active !== false);
+  if (activeSets.length === 0) return [];
+
+  const cycleMs = (config.cycleDays || 7) * DAY_MS;
+  const totalHoursMs = activeSets.reduce((sum, s) => sum + (s.hours || 1), 0) * 3600000;
+  const horizon = now + cycleMs + 2 * totalHoursMs + 3600000;
+  const timeline = computeRotationTimeline(config, lastCompleted, now, horizon);
+
+  const firstOccurrence = new Map();
+  for (const entry of timeline) {
+    if (!firstOccurrence.has(entry.set.id)) firstOccurrence.set(entry.set.id, entry);
   }
-  return plan;
+
+  return activeSets.map(set => {
+    const last = lastCompleted[set.id] || null;
+    const entry = firstOccurrence.get(set.id);
+    const dueAt = entry ? entry.startAt : now;
+    const isDue = now >= dueAt;
+    let dueLabel;
+    if (!last) {
+      dueLabel = isDue ? 'Up next' : 'Never watered';
+    } else if (isDue) {
+      dueLabel = 'Due now';
+    } else {
+      const hoursUntil = (dueAt - now) / 3600000;
+      dueLabel = hoursUntil < 24 ? `Due in ${Math.ceil(hoursUntil)}h` : `Due in ${Math.ceil(hoursUntil / 24)}d`;
+    }
+    return { set, lastCompleted: last, dueAt, isDue, dueLabel };
+  }).sort((a, b) => a.dueAt - b.dueAt);
+}
+
+// Projects the field-wide rotation timeline forward `days` days for the Plan tab.
+function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDate = new Date()) {
+  const now = startDate.getTime();
+  const untilMs = now + days * DAY_MS;
+  return computeRotationTimeline(config, lastCompleted, now, untilMs)
+    .map(entry => ({ ...entry, isDue: now >= entry.startAt }));
 }
 
 // ============================================================
@@ -1164,7 +1225,7 @@ function NextSetCard({ nextSet, dueInfo, config, schedule, weekKey, showStart, s
         {nextSet?.label}
       </div>
       <div className="text-sm mb-6" style={{ color: '#8C9683' }}>
-        Rows {nextSet?.rows} · {nextSet?.gates} gates · {nextSet?.hours}h planned · every {nextSet?.frequencyDays}d · {afiLabel} rows
+        Rows {nextSet?.rows} · {nextSet?.gates} gates · {nextSet?.hours}h planned · {afiLabel} rows
       </div>
 
       {showStart === nextSet?.id ? (
@@ -1401,7 +1462,7 @@ function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, afiMode, o
             )}
           </div>
           <div className="text-xs" style={{ color: '#8C9683' }}>
-            Rows {set.rows} · {set.gates} gates · {set.hours}h · every {set.frequencyDays}d · {afiLabel} rows
+            Rows {set.rows} · {set.gates} gates · {set.hours}h · {afiLabel} rows
           </div>
         </div>
         <button
@@ -1958,7 +2019,6 @@ function SetupView({ config, onSave, userEmail, onSignOut }) {
       rows: '1-1',
       gates: 1,
       hours: local.defaultSetHours || 8,
-      frequencyDays: 3,
       afiMode: 'auto',
       order: maxOrder + 1,
       active: true
@@ -2029,6 +2089,27 @@ function SetupView({ config, onSave, userEmail, onSignOut }) {
           />
           <div className="text-xs mt-1" style={{ color: '#8C9683' }}>
             Unlocks stage-based scheduling on the Plan tab
+          </div>
+        </div>
+        <div className="mt-3">
+          <div className="flex items-center justify-between">
+            <label className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>Days Between Rotations</label>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setLocal({ ...local, cycleDays: Math.max(1, (local.cycleDays || 7) - 1) })}
+                className="w-8 h-8 rounded-lg"
+                style={{ background: '#0B0F08' }}
+              >−</button>
+              <span className="font-mono-time w-16 text-center">{local.cycleDays || 7}d</span>
+              <button
+                onClick={() => setLocal({ ...local, cycleDays: Math.min(21, (local.cycleDays || 7) + 1) })}
+                className="w-8 h-8 rounded-lg"
+                style={{ background: '#0B0F08' }}
+              >+</button>
+            </div>
+          </div>
+          <div className="text-xs mt-1" style={{ color: '#8C9683' }}>
+            After every section has been watered once, the rotation waits this many days (counted from when Section 1 finished) before starting over from Section 1.
           </div>
         </div>
       </div>
@@ -2295,7 +2376,7 @@ function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown
             style={{ color: '#F5F7F0' }}
           />
           <div className="text-xs truncate" style={{ color: '#8C9683' }}>
-            Rows {set.rows} · {set.gates} gates · {set.hours}h · every {set.frequencyDays}d{!isActive ? ' · inactive' : ''}
+            Rows {set.rows} · {set.gates} gates · {set.hours}h{!isActive ? ' · inactive' : ''}
           </div>
         </div>
         <button
@@ -2354,23 +2435,6 @@ function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown
               <span className="font-mono-time w-10 text-center">{set.hours}h</span>
               <button
                 onClick={() => onUpdate('hours', Math.min(24, set.hours + 1))}
-                className="w-8 h-8 rounded-lg"
-                style={{ background: '#151A11' }}
-              >+</button>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <label className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>Watering Frequency</label>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => onUpdate('frequencyDays', Math.max(1, (set.frequencyDays || 1) - 1))}
-                className="w-8 h-8 rounded-lg"
-                style={{ background: '#151A11' }}
-              >−</button>
-              <span className="font-mono-time w-20 text-center">every {set.frequencyDays}d</span>
-              <button
-                onClick={() => onUpdate('frequencyDays', Math.min(14, (set.frequencyDays || 1) + 1))}
                 className="w-8 h-8 rounded-lg"
                 style={{ background: '#151A11' }}
               >+</button>
@@ -2686,11 +2750,46 @@ function ScheduleView({ config, schedule, setView }) {
   );
 }
 
+// One block in the rotation timeline: a section running for its set hours,
+// or (if this is the soonest entry and it's already due) the "up next" block.
+function PlanEntryRow({ entry, config, schedule, isLast }) {
+  const startDate = new Date(entry.startAt);
+  const weekKey = getWeekKey(startDate);
+  const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === resolveAfiMode(entry.set, config, schedule, weekKey))?.label || 'Every';
+  return (
+    <div className="p-3" style={{ borderBottom: isLast ? 'none' : '1px solid #2A3525' }}>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs font-semibold" style={{ color: entry.isDue ? '#A3E635' : '#8C9683' }}>
+          {entry.isDue ? 'Due now' : `${formatDayLabel(startDate)} · ${formatTimeShort(startDate)} – ${formatTimeShort(new Date(entry.endAt))}`}
+        </div>
+        {entry.isDue && (
+          <div className="text-xs px-2 py-1 rounded-full font-semibold" style={{ background: '#A3E635', color: '#0B0F08' }}>
+            Up Next
+          </div>
+        )}
+      </div>
+      <div className="font-semibold">{entry.set.label}</div>
+      <div className="text-xs" style={{ color: '#8C9683' }}>
+        Rows {entry.set.rows} · {entry.set.hours}h · {afiLabel} rows
+      </div>
+    </div>
+  );
+}
+
+// Gap in the timeline where the field is resting between rotations.
+function RestingRow({ to, isLast }) {
+  const toDate = new Date(to);
+  return (
+    <div className="p-4 text-center text-xs" style={{ color: '#8C9683', borderBottom: isLast ? 'none' : '1px solid #2A3525' }}>
+      Field resting — next rotation starts {formatDayLabel(toDate)} at {formatTimeShort(toDate)}
+    </div>
+  );
+}
+
 function PlanView({ config, schedule, setView }) {
   const activeSets = config.sets.filter(s => s.active !== false);
   const stageInfo = getCurrentStage(config.plantingDate);
   const plan = computeProjectedSchedule(config, schedule.lastCompleted, 14);
-  const todayKey = getDayKey(new Date());
 
   if (activeSets.length === 0) {
     return (
@@ -2710,6 +2809,16 @@ function PlanView({ config, schedule, setView }) {
       </div>
     );
   }
+
+  const rows = [];
+  let cursor = Date.now();
+  plan.forEach((entry, i) => {
+    if (entry.startAt - cursor > 3600000) {
+      rows.push({ type: 'gap', to: entry.startAt, key: `gap-${i}` });
+    }
+    rows.push({ type: 'set', entry, key: `set-${i}` });
+    cursor = entry.endAt;
+  });
 
   return (
     <div className="space-y-4">
@@ -2738,43 +2847,15 @@ function PlanView({ config, schedule, setView }) {
       <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
         <div className="text-xs uppercase tracking-[0.2em] mb-1" style={{ color: '#8C9683' }}>Upcoming Rotation</div>
         <div className="text-xs" style={{ color: '#8C9683' }}>
-          Projected from each section's frequency and order. Actual order shifts if sets run early, late, or out of turn.
+          Sections run back-to-back in order. Once every section has watered, the field rests until {config.cycleDays || 7} days after Section 1 finished, then the rotation starts over.
         </div>
       </div>
 
       <div className="rounded-2xl overflow-hidden" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
-        {plan.map((p, i) => {
-          const isToday = getDayKey(p.date) === todayKey;
-          const dateLabel = p.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-          return (
-            <div key={i} className="p-3 flex items-center gap-3" style={{ borderBottom: i < plan.length - 1 ? '1px solid #2A3525' : 'none' }}>
-              <div className="w-20 flex-shrink-0">
-                <div className="text-xs font-semibold" style={{ color: isToday ? '#FACC15' : '#F5F7F0' }}>
-                  {isToday ? 'Today' : dateLabel}
-                </div>
-                {isToday && <div className="text-[10px]" style={{ color: '#8C9683' }}>{dateLabel}</div>}
-              </div>
-              {p.set ? (
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold">{p.set.label}</div>
-                  <div className="text-xs" style={{ color: '#8C9683' }}>
-                    Rows {p.set.rows} · {p.set.hours}h · every {p.set.frequencyDays}d
-                  </div>
-                </div>
-              ) : (
-                <div className="flex-1 text-sm" style={{ color: '#8C9683' }}>—</div>
-              )}
-              {p.set && (
-                <div className="text-xs px-2 py-1 rounded-full font-semibold flex-shrink-0" style={{
-                  background: p.isDue ? '#A3E635' : '#2A3525',
-                  color: p.isDue ? '#0B0F08' : '#8C9683'
-                }}>
-                  {p.isDue ? 'Due' : 'Planned'}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {rows.map((row, i) => row.type === 'gap'
+          ? <RestingRow key={row.key} to={row.to} isLast={i === rows.length - 1} />
+          : <PlanEntryRow key={row.key} entry={row.entry} config={config} schedule={schedule} isLast={i === rows.length - 1} />
+        )}
       </div>
     </div>
   );

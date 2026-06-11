@@ -60,6 +60,16 @@ Storage keys follow these prefixes:
 
 When making changes to data shape, update the relevant section in App.jsx — there's no separate schema definition outside that file.
 
+## Watering rotation model
+
+The field runs through its active sections back-to-back, in `order`, each for its own `hours`. There's no per-section watering frequency — instead `config.cycleDays` (default 7) is a single field-wide setting: once every active section has been watered since section #1 (lowest `order`) last finished, the whole field rests until `cycleDays` days after that finish, then the rotation starts over from section #1.
+
+- `computeRotationTimeline(config, lastCompleted, now, untilMs)` (`src/App.jsx`) generates the forward timeline of `{set, startAt, endAt}` blocks — this is the source of truth for the schedule.
+- `computeNextSets()` and `computeProjectedSchedule()` are thin wrappers over it: `computeNextSets()` ranks sections by when the timeline says they next run (used by the "Up Next" card and due badges), `computeProjectedSchedule()` feeds the Plan tab's timeline view.
+- `migrateConfig()` fills in `cycleDays: 7` for configs saved before this model existed, and no longer sets a per-section `frequencyDays`.
+- The "Days Between Rotations" stepper in Setup edits `config.cycleDays`.
+- `supabase/functions/notify/index.ts` mirrors `migrateConfig()` and has its own `checkSectionsDue()` that fires once when a full rotation is done and `cycleDays` has elapsed since section #1 finished — keep it in sync if this model changes.
+
 ## Authentication
 
 The app requires sign-in (Supabase Auth, email/password). All data stays shared across everyone who's logged in — auth is purely a login gate, not per-user data partitioning.
@@ -75,7 +85,7 @@ The app requires sign-in (Supabase Auth, email/password). All data stays shared 
 `src/lib/push.js` registers `public/sw.js` as a service worker and manages each device's subscription (stored at `push:<deviceId>`). `broadcastPush()` calls the `notify` Edge Function (`supabase/functions/notify/index.ts`) to actually send pushes via VAPID/web-push.
 
 - **Crew activity** (set started/completed) — triggered directly from `App.jsx` via `broadcastPush()`.
-- **Set timer done**, **section due to water**, and **daily reminders** — handled by the `notify` function's `check` action, which is meant to run every 10 minutes via `pg_cron` (see the "Push notification scheduling" block in `supabase/schema.sql`). It mirrors `migrateConfig`/`computeNextSets` from `App.jsx`, so keep that logic in sync if the schedule model changes.
+- **Set timer done**, **section due to water**, and **daily reminders** — handled by the `notify` function's `check` action, which is meant to run every 10 minutes via `pg_cron` (see the "Push notification scheduling" block in `supabase/schema.sql`). It mirrors `migrateConfig` and the rotation/cycle logic from `App.jsx` (see "Watering rotation model" above), so keep that logic in sync if the schedule model changes.
 - Requires `VITE_VAPID_PUBLIC_KEY` (frontend env var) plus `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` (Edge Function secrets). See README "Step 3 — Turn on notifications".
 
 ## Common tasks

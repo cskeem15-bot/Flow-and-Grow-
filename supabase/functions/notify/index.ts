@@ -89,29 +89,17 @@ async function sendToAll(payload, excludeEndpoint = null) {
   }));
 }
 
-// Mirrors migrateConfig() / computeNextSets() in src/App.jsx so the "due to
-// water" check matches what the app shows on the Plan tab.
+// Mirrors migrateConfig() in src/App.jsx so the "due to water" check matches
+// what the app shows on the Plan tab.
 function migrateConfig(c) {
   if (!c) return c;
   const sets = (c.sets || []).map((s, i) => ({
-    frequencyDays: 3,
     afiMode: 'every',
     order: i + 1,
     active: true,
     ...s
   }));
-  return { ...c, sets };
-}
-
-function computeNextSets(config, lastCompleted = {}, now = Date.now()) {
-  const activeSets = (config.sets || []).filter(s => s.active !== false);
-  return activeSets.map(set => {
-    const last = lastCompleted[set.id] || null;
-    const freqMs = (set.frequencyDays || 1) * DAY_MS;
-    const dueAt = last ? last + freqMs : 0;
-    const isDue = now >= dueAt;
-    return { set, lastCompleted: last, dueAt, isDue };
-  });
+  return { cycleDays: 7, ...c, sets };
 }
 
 function todayKey(now = new Date()) {
@@ -140,6 +128,9 @@ async function checkTimerDone(notifyState) {
   notifyState.timerNotifiedFor = dedupeKey;
 }
 
+// Fires once when the whole field has finished a full rotation and the
+// cycleDays rest period (counted from when section #1 last finished) is up,
+// signaling it's time to start the rotation over from section #1.
 async function checkSectionsDue(notifyState) {
   const config = migrateConfig(await getValue('config', null));
   if (!config) return;
@@ -148,19 +139,32 @@ async function checkSectionsDue(notifyState) {
   const today = todayKey();
   notifyState.dueNotified = notifyState.dueNotified || {};
 
-  for (const { set, isDue, lastCompleted } of computeNextSets(config, schedule.lastCompleted || {})) {
-    // Skip sections that have never been watered — that's the starting
-    // state for a new field, not a fresh "due" event worth a push.
-    if (!lastCompleted || !isDue) continue;
-    if (notifyState.dueNotified[set.id] === today) continue;
+  const activeSets = (config.sets || []).filter(s => s.active !== false)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  if (activeSets.length === 0) return;
 
-    await sendToAll({
-      title: `${set.label} is due to water`,
-      body: `It's been ${set.frequencyDays}+ days since the last watering.`,
-      url: '/'
-    });
-    notifyState.dueNotified[set.id] = today;
-  }
+  const firstSet = activeSets[0];
+  const lastCompleted = schedule.lastCompleted || {};
+  const firstSetLast = lastCompleted[firstSet.id] || null;
+  if (!firstSetLast) return;
+
+  const allDone = activeSets.every(s => {
+    const lc = lastCompleted[s.id];
+    return lc != null && lc >= firstSetLast;
+  });
+  if (!allDone) return;
+
+  const cycleMs = (config.cycleDays || 7) * DAY_MS;
+  const nextRotationStart = firstSetLast + cycleMs;
+  if (Date.now() < nextRotationStart) return;
+  if (notifyState.dueNotified[firstSet.id] === today) return;
+
+  await sendToAll({
+    title: `${firstSet.label} is due to water`,
+    body: `It's been ${config.cycleDays}+ days since the rotation finished — time to start over from ${firstSet.label}.`,
+    url: '/'
+  });
+  notifyState.dueNotified[firstSet.id] = today;
 }
 
 async function checkDailyReminders(notifyState) {
