@@ -399,6 +399,42 @@ function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDa
 }
 
 // ============================================================
+// ERROR BOUNDARY
+// Catches render errors in a tab so a bug in one screen shows a
+// readable message instead of a blank screen, and the rest of the
+// app (header, bottom nav) stays usable.
+// ============================================================
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('Screen crashed:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-2xl p-6 text-center" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+          <AlertCircle className="w-10 h-10 mx-auto mb-3" style={{ color: '#FACC15' }} />
+          <div className="font-display text-xl mb-2">This screen hit a problem</div>
+          <div className="text-sm mb-4" style={{ color: '#8C9683' }}>
+            Try a different tab and come back, or reload the page. If it keeps happening, screenshot the error below.
+          </div>
+          <div className="text-xs font-mono-time p-3 rounded-xl text-left overflow-auto" style={{ background: '#0B0F08', color: '#8C9683', maxHeight: '160px', whiteSpace: 'pre-wrap' }}>
+            {String(this.state.error?.stack || this.state.error?.message || this.state.error)}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function App() {
@@ -679,6 +715,7 @@ export default function App() {
       <Header config={config} weekKey={weekKey} />
 
       <div className="pb-24 px-4 max-w-2xl mx-auto">
+       <ErrorBoundary key={view}>
         {view === 'now' && (
           <NowView
             config={config}
@@ -729,6 +766,7 @@ export default function App() {
         {view === 'schedule' && (
           <ScheduleView config={config} schedule={schedule} setView={setView} />
         )}
+       </ErrorBoundary>
       </div>
 
       <BottomNav view={view} setView={setView} hasActive={!!activeSet} />
