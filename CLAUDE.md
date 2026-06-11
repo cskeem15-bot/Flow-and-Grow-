@@ -64,11 +64,19 @@ When making changes to data shape, update the relevant section in App.jsx — th
 
 The field runs through its active sections back-to-back, in `order`, each for its own `hours`. There's no per-section watering frequency — instead `config.cycleDays` (default 7) is a single field-wide setting: once every active section has been watered since section #1 (lowest `order`) last finished, the whole field rests until `cycleDays` days after that finish, then the rotation starts over from section #1.
 
-- `computeRotationTimeline(config, lastCompleted, now, untilMs)` (`src/App.jsx`) generates the forward timeline of `{set, startAt, endAt}` blocks — this is the source of truth for the schedule.
+- `computeRotationTimeline(config, lastCompleted, now, untilMs, postponedUntil)` (`src/App.jsx`) generates the forward timeline of `{set, startAt, endAt}` blocks — this is the source of truth for the schedule.
 - `computeNextSets()` and `computeProjectedSchedule()` are thin wrappers over it: `computeNextSets()` ranks sections by when the timeline says they next run (used by the "Up Next" card and due badges), `computeProjectedSchedule()` feeds the Plan tab's timeline view.
 - `migrateConfig()` fills in `cycleDays: 7` for configs saved before this model existed, and no longer sets a per-section `frequencyDays`.
 - The "Days Between Rotations" stepper in Setup edits `config.cycleDays`.
-- `supabase/functions/notify/index.ts` mirrors `migrateConfig()` and has its own `checkSectionsDue()` that fires once when a full rotation is done and `cycleDays` has elapsed since section #1 finished — keep it in sync if this model changes.
+- `supabase/functions/notify/index.ts` mirrors `migrateConfig()` and has its own `checkSectionsDue()` that fires once when a full rotation is done and `cycleDays` (plus any postponement) has elapsed since section #1 finished — keep it in sync if this model changes.
+
+### Postponing watering (rain / wet soil)
+
+`schedule.postponedUntil` (ms timestamp, or `null`) is a single field-wide "don't start anything before this time" floor, set via `setPostponedUntil()` in `App()` and rendered by `PostponeCard` on the Now tab.
+
+- `computeRotationTimeline` clamps its starting cursor to `postponedUntil` when that's later than `now`, which pushes the whole remaining timeline back — so the Plan tab, "Up Next" card, and due badges all reflect the delay automatically.
+- It auto-expires: once real time passes `postponedUntil`, it's ignored and the schedule behaves normally again — no need to clear it. `PostponeCard` also offers "Resume Now" to clear it early.
+- `supabase/functions/notify/index.ts`'s `checkSectionsDue()` also respects `postponedUntil` so the "due to water" push doesn't fire during a postponement.
 
 ## Authentication
 

@@ -5,7 +5,7 @@ import {
   Square, Activity, Users, ChevronDown, ChevronUp, Trash2,
   X, Bell, Camera, MessageSquare, Plus,
   Image as ImageIcon, Send, ListChecks, BellOff,
-  Sprout, Eye, TrendingUp, Sun, LogOut, Lock
+  Sprout, Eye, TrendingUp, Sun, LogOut, Lock, CloudRain
 } from 'lucide-react';
 import {
   registerServiceWorker, isPushSupported, getCurrentSubscription,
@@ -396,7 +396,7 @@ function resolveAfiMode(set, config, schedule, weekKey) {
 // `hours`; once every active section has run since section #1 (lowest order)
 // last finished, the whole rotation idles until `cycleDays` days after that
 // finish before starting over from section #1.
-function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), untilMs = now) {
+function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), untilMs = now, postponedUntil = null) {
   const activeSets = (config.sets || []).filter(s => s.active !== false)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   if (activeSets.length === 0) return [];
@@ -404,11 +404,14 @@ function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), u
   const cycleMs = (config.cycleDays || 7) * DAY_MS;
   const firstSet = activeSets[0];
   const firstSetLast = lastCompleted[firstSet.id] || null;
+  // Nothing in the rotation can start before a postponement (rain, wet soil)
+  // clears. Once real time passes postponedUntil it has no effect.
+  const effectiveNow = (postponedUntil && postponedUntil > now) ? postponedUntil : now;
 
   let cursor;
   let startIdx;
   if (firstSetLast == null) {
-    cursor = now;
+    cursor = effectiveNow;
     startIdx = 0;
   } else {
     const idx = activeSets.findIndex(s => {
@@ -416,10 +419,10 @@ function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), u
       return lc == null || lc < firstSetLast;
     });
     if (idx === -1) {
-      cursor = firstSetLast + cycleMs;
+      cursor = Math.max(firstSetLast + cycleMs, effectiveNow);
       startIdx = 0;
     } else {
-      cursor = now;
+      cursor = effectiveNow;
       startIdx = idx;
     }
   }
@@ -448,14 +451,15 @@ function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), u
 
 // Ranks active field sections by when the rotation timeline says they'll
 // next run, so the app can recommend what to run next.
-function computeNextSets(config, lastCompleted = {}, now = Date.now()) {
+function computeNextSets(config, lastCompleted = {}, now = Date.now(), postponedUntil = null) {
   const activeSets = (config.sets || []).filter(s => s.active !== false);
   if (activeSets.length === 0) return [];
 
   const cycleMs = (config.cycleDays || 7) * DAY_MS;
   const totalHoursMs = activeSets.reduce((sum, s) => sum + (s.hours || 1), 0) * 3600000;
-  const horizon = now + cycleMs + 2 * totalHoursMs + 3600000;
-  const timeline = computeRotationTimeline(config, lastCompleted, now, horizon);
+  const effectiveNow = (postponedUntil && postponedUntil > now) ? postponedUntil : now;
+  const horizon = effectiveNow + cycleMs + 2 * totalHoursMs + 3600000;
+  const timeline = computeRotationTimeline(config, lastCompleted, now, horizon, postponedUntil);
 
   const firstOccurrence = new Map();
   for (const entry of timeline) {
@@ -468,7 +472,9 @@ function computeNextSets(config, lastCompleted = {}, now = Date.now()) {
     const dueAt = entry ? entry.startAt : now;
     const isDue = now >= dueAt;
     let dueLabel;
-    if (!last) {
+    if (postponedUntil && postponedUntil > now && dueAt === postponedUntil) {
+      dueLabel = `Postponed · resumes ${formatDayLabel(new Date(dueAt))}`;
+    } else if (!last) {
       dueLabel = isDue ? 'Up next' : 'Never watered';
     } else if (isDue) {
       dueLabel = 'Due now';
@@ -481,10 +487,10 @@ function computeNextSets(config, lastCompleted = {}, now = Date.now()) {
 }
 
 // Projects the field-wide rotation timeline forward `days` days for the Plan tab.
-function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDate = new Date()) {
+function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDate = new Date(), postponedUntil = null) {
   const now = startDate.getTime();
   const untilMs = now + days * DAY_MS;
-  return computeRotationTimeline(config, lastCompleted, now, untilMs)
+  return computeRotationTimeline(config, lastCompleted, now, untilMs, postponedUntil)
     .map(entry => ({ ...entry, isDue: now >= entry.startAt }));
 }
 
@@ -581,7 +587,7 @@ export default function App() {
     const wk = await getValue(`week:${weekKey}`, null);
     const newWeek = wk || { weekKey, mode: 'every', startedAt: null, sets: {} };
     setCurrentWeek(prev => JSON.stringify(prev) === JSON.stringify(newWeek) ? prev : newWeek);
-    const sch = await getValue('schedule', { lastCompleted: {}, afiOverrides: {} });
+    const sch = await getValue('schedule', { lastCompleted: {}, afiOverrides: {}, postponedUntil: null });
     setSchedule(prev => JSON.stringify(prev) === JSON.stringify(sch) ? prev : sch);
     const r = await getValue('reminders', DEFAULT_REMINDERS);
     setReminders(prev => JSON.stringify(prev) === JSON.stringify(r) ? prev : r);
@@ -738,6 +744,16 @@ export default function App() {
     await saveWeek(newWeek);
   }
 
+  // Pushes back the next set in the rotation until `until` (ms timestamp), or
+  // clears the postponement early if `until` is null. Used for rain delays /
+  // letting wet soil dry out before resuming the schedule.
+  async function setPostponedUntil(until) {
+    recordWrite();
+    const newSchedule = { ...schedule, postponedUntil: until };
+    setSchedule(newSchedule);
+    await setValue('schedule', newSchedule);
+  }
+
   // Sets or clears a manual override of the auto AFI pattern for one
   // calendar week (mode === null clears it, falling back to auto).
   async function setAfiOverride(targetWeekKey, mode) {
@@ -857,6 +873,7 @@ export default function App() {
             onAddTodayEntry={addTodayEntry}
             onMarkRowAdvanced={markRowAdvanced}
             onSetAfiOverride={setAfiOverride}
+            onSetPostponed={setPostponedUntil}
             tick={tick}
             setView={setView}
           />
@@ -926,7 +943,7 @@ function Header({ config, weekKey }) {
   );
 }
 
-function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onSetAfiOverride, tick, setView }) {
+function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onSetAfiOverride, onSetPostponed, tick, setView }) {
   const [showComplete, setShowComplete] = useState(false);
   const [showStart, setShowStart] = useState(null);
   const [showTailWatch, setShowTailWatch] = useState(false);
@@ -938,7 +955,7 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
 
   const setsDone = Object.values(currentWeek.sets).filter(s => s.status === 'done').length;
   const activeSetsCount = config.sets.filter(s => s.active !== false).length;
-  const nextSets = computeNextSets(config, schedule.lastCompleted);
+  const nextSets = computeNextSets(config, schedule.lastCompleted, Date.now(), schedule.postponedUntil);
   const nextInfo = nextSets[0];
   const nextSet = nextInfo?.set;
 
@@ -995,6 +1012,10 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
           setCustomHours={setCustomHours}
           onStart={onStart}
         />
+      )}
+
+      {!activeSet && nextSet && (
+        <PostponeCard schedule={schedule} onSetPostponed={onSetPostponed} />
       )}
 
       {reminders.length > 0 && (
@@ -1288,6 +1309,85 @@ function NextSetCard({ nextSet, dueInfo, config, schedule, weekKey, showStart, s
   );
 }
 
+// Lets the crew push back the next set in the rotation — e.g. it just
+// rained or the soil's still too wet — and resume automatically once the
+// delay passes (or jump back in early with "Resume Now").
+function PostponeCard({ schedule, onSetPostponed }) {
+  const [expanded, setExpanded] = useState(false);
+  const postponedUntil = schedule.postponedUntil;
+  const isPostponed = postponedUntil && postponedUntil > Date.now();
+
+  if (isPostponed) {
+    const until = new Date(postponedUntil);
+    return (
+      <div className="rounded-2xl p-4 flex items-center justify-between gap-3" style={{ background: '#151A11', border: '1px solid #F59E0B' }}>
+        <div className="flex items-center gap-3 min-w-0">
+          <CloudRain className="w-5 h-5 flex-shrink-0" style={{ color: '#F59E0B' }} />
+          <div className="min-w-0">
+            <div className="text-xs uppercase tracking-[0.2em] mb-0.5" style={{ color: '#F59E0B' }}>
+              Watering Postponed
+            </div>
+            <div className="text-sm truncate" style={{ color: '#8C9683' }}>
+              Resumes {formatDayLabel(until)} at {formatTimeShort(until)}
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={() => onSetPostponed(null)}
+          className="px-3 py-2 rounded-xl text-sm font-semibold flex-shrink-0 flex items-center gap-1"
+          style={{ background: '#2A3525', color: '#F5F7F0' }}
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          Resume Now
+        </button>
+      </div>
+    );
+  }
+
+  if (!expanded) {
+    return (
+      <button
+        onClick={() => setExpanded(true)}
+        className="w-full rounded-2xl p-3 text-sm font-semibold flex items-center justify-center gap-2"
+        style={{ background: '#151A11', border: '1px solid #2A3525', color: '#8C9683' }}
+      >
+        <CloudRain className="w-4 h-4" />
+        Postpone watering (rain / wet soil)
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <div className="text-xs uppercase tracking-[0.2em] mb-2" style={{ color: '#8C9683' }}>
+        Postpone Watering
+      </div>
+      <div className="text-xs mb-3" style={{ color: '#8C9683' }}>
+        Push back the next set if it rained or the soil's still wet. The rotation picks back up on its own once the delay passes.
+      </div>
+      <div className="grid grid-cols-3 gap-2 mb-2">
+        {[1, 2, 3].map(days => (
+          <button
+            key={days}
+            onClick={() => { onSetPostponed(Date.now() + days * DAY_MS); setExpanded(false); }}
+            className="py-3 rounded-xl text-sm font-semibold"
+            style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+          >
+            +{days} day{days > 1 ? 's' : ''}
+          </button>
+        ))}
+      </div>
+      <button
+        onClick={() => setExpanded(false)}
+        className="w-full py-2 rounded-xl text-sm"
+        style={{ color: '#8C9683' }}
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 // Shows the field-wide AFI pattern that "Auto" sections will run this
 // calendar week, and lets the crew override it for just this week.
 function WeekPatternCard({ config, schedule, weekKey, onSetOverride }) {
@@ -1369,7 +1469,7 @@ function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, 
   const [photoSetId, setPhotoSetId] = useState(null);
   const sortedSets = [...config.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const dueById = {};
-  computeNextSets(config, schedule.lastCompleted).forEach(info => { dueById[info.set.id] = info; });
+  computeNextSets(config, schedule.lastCompleted, Date.now(), schedule.postponedUntil).forEach(info => { dueById[info.set.id] = info; });
 
   return (
     <div className="space-y-4">
@@ -2789,7 +2889,7 @@ function RestingRow({ to, isLast }) {
 function PlanView({ config, schedule, setView }) {
   const activeSets = config.sets.filter(s => s.active !== false);
   const stageInfo = getCurrentStage(config.plantingDate);
-  const plan = computeProjectedSchedule(config, schedule.lastCompleted, 14);
+  const plan = computeProjectedSchedule(config, schedule.lastCompleted, 14, new Date(), schedule.postponedUntil);
 
   if (activeSets.length === 0) {
     return (

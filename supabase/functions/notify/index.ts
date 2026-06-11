@@ -155,7 +155,11 @@ async function checkSectionsDue(notifyState) {
   if (!allDone) return;
 
   const cycleMs = (config.cycleDays || 7) * DAY_MS;
-  const nextRotationStart = firstSetLast + cycleMs;
+  let nextRotationStart = firstSetLast + cycleMs;
+  // A rain/wet-soil postponement pushes the restart back further still.
+  if (schedule.postponedUntil && schedule.postponedUntil > nextRotationStart) {
+    nextRotationStart = schedule.postponedUntil;
+  }
   if (Date.now() < nextRotationStart) return;
   if (notifyState.dueNotified[firstSet.id] === today) return;
 
