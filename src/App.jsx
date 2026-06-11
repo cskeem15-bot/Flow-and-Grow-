@@ -111,6 +111,7 @@ const DEFAULT_CONFIG = {
 };
 
 const AFI_MODE_OPTIONS = [
+  { id: 'auto', label: 'Auto', sub: 'by week' },
   { id: 'every', label: 'Every', sub: 'all rows' },
   { id: 'evens', label: 'Evens', sub: 'AFI' },
   { id: 'odds', label: 'Odds', sub: 'AFI' }
@@ -284,12 +285,18 @@ function getWeekKey(date = new Date()) {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 }
 
-function getWeekRange(weekKey) {
+// Returns the Monday (UTC) of the given ISO week, e.g. "2026-W24" -> Jun 8 2026.
+function weekKeyToDate(weekKey) {
   const [year, w] = weekKey.split('-W');
   const jan4 = new Date(Date.UTC(parseInt(year), 0, 4));
   const jan4Day = jan4.getUTCDay() || 7;
   const weekStart = new Date(jan4);
   weekStart.setUTCDate(jan4.getUTCDate() - jan4Day + 1 + (parseInt(w) - 1) * 7);
+  return weekStart;
+}
+
+function getWeekRange(weekKey) {
+  const weekStart = weekKeyToDate(weekKey);
   const weekEnd = new Date(weekStart);
   weekEnd.setUTCDate(weekStart.getUTCDate() + 4);
   const fmt = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -351,6 +358,27 @@ function migrateConfig(c) {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Field-wide alternate-furrow pattern: the calendar week the field is
+// planted waters every row, then each week after alternates evens/odds.
+function computeAutoAfiMode(plantingDate, weekKey) {
+  if (!plantingDate) return 'every';
+  const plantingWeekKey = getWeekKey(new Date(`${plantingDate}T00:00:00`));
+  const weeksSince = Math.round(
+    (weekKeyToDate(weekKey) - weekKeyToDate(plantingWeekKey)) / (7 * DAY_MS)
+  );
+  if (weeksSince <= 0) return 'every';
+  return weeksSince % 2 === 1 ? 'evens' : 'odds';
+}
+
+// Resolves a section's effective AFI pattern for a given week: explicit
+// modes pass through unchanged, while 'auto' follows the field-wide
+// schedule unless that week has a manual override.
+function resolveAfiMode(set, config, schedule, weekKey) {
+  const mode = set.afiMode || 'every';
+  if (mode !== 'auto') return mode;
+  return schedule?.afiOverrides?.[weekKey] || computeAutoAfiMode(config.plantingDate, weekKey);
+}
 
 // Ranks active field sections by their own watering frequency/order so the
 // app can recommend what to run next, independent of a fixed weekly cycle.
@@ -482,7 +510,7 @@ export default function App() {
     const wk = await getValue(`week:${weekKey}`, null);
     const newWeek = wk || { weekKey, mode: 'every', startedAt: null, sets: {} };
     setCurrentWeek(prev => JSON.stringify(prev) === JSON.stringify(newWeek) ? prev : newWeek);
-    const sch = await getValue('schedule', { lastCompleted: {} });
+    const sch = await getValue('schedule', { lastCompleted: {}, afiOverrides: {} });
     setSchedule(prev => JSON.stringify(prev) === JSON.stringify(sch) ? prev : sch);
     const r = await getValue('reminders', DEFAULT_REMINDERS);
     setReminders(prev => JSON.stringify(prev) === JSON.stringify(r) ? prev : r);
@@ -639,6 +667,18 @@ export default function App() {
     await saveWeek(newWeek);
   }
 
+  // Sets or clears a manual override of the auto AFI pattern for one
+  // calendar week (mode === null clears it, falling back to auto).
+  async function setAfiOverride(targetWeekKey, mode) {
+    recordWrite();
+    const newOverrides = { ...(schedule.afiOverrides || {}) };
+    if (mode) newOverrides[targetWeekKey] = mode;
+    else delete newOverrides[targetWeekKey];
+    const newSchedule = { ...schedule, afiOverrides: newOverrides };
+    setSchedule(newSchedule);
+    await setValue('schedule', newSchedule);
+  }
+
   async function addPhoto(setId, file, caption, crewMember) {
     try {
       const dataUrl = await compressImage(file);
@@ -722,6 +762,7 @@ export default function App() {
             activeSet={activeSet}
             currentWeek={currentWeek}
             schedule={schedule}
+            weekKey={weekKey}
             reminders={reminders.filter(r => r.enabled)}
             todayNote={todayNote}
             onStart={startSet}
@@ -729,6 +770,7 @@ export default function App() {
             onCancel={cancelActive}
             onAddTodayEntry={addTodayEntry}
             onMarkRowAdvanced={markRowAdvanced}
+            onSetAfiOverride={setAfiOverride}
             tick={tick}
             setView={setView}
           />
@@ -798,7 +840,7 @@ function Header({ config, weekKey }) {
   );
 }
 
-function NowView({ config, activeSet, currentWeek, schedule, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, tick, setView }) {
+function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onSetAfiOverride, tick, setView }) {
   const [showComplete, setShowComplete] = useState(false);
   const [showStart, setShowStart] = useState(null);
   const [showTailWatch, setShowTailWatch] = useState(false);
@@ -826,6 +868,8 @@ function NowView({ config, activeSet, currentWeek, schedule, reminders, todayNot
   return (
     <div className="space-y-4">
       <StageBanner config={config} setView={setView} />
+
+      <WeekPatternCard config={config} schedule={schedule} weekKey={weekKey} onSetOverride={onSetAfiOverride} />
 
       {activeSet ? (
         <ActiveSetCard
@@ -855,6 +899,8 @@ function NowView({ config, activeSet, currentWeek, schedule, reminders, todayNot
           nextSet={nextSet}
           dueInfo={nextInfo}
           config={config}
+          schedule={schedule}
+          weekKey={weekKey}
           showStart={showStart}
           setShowStart={setShowStart}
           crewMember={crewMember}
@@ -1072,8 +1118,8 @@ function ActiveSetCard({ config, activeSet, showComplete, setShowComplete, notes
   );
 }
 
-function NextSetCard({ nextSet, dueInfo, config, showStart, setShowStart, crewMember, setCrewMember, customHours, setCustomHours, onStart }) {
-  const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === (nextSet?.afiMode || 'every'))?.label || 'Every';
+function NextSetCard({ nextSet, dueInfo, config, schedule, weekKey, showStart, setShowStart, crewMember, setCrewMember, customHours, setCustomHours, onStart }) {
+  const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === resolveAfiMode(nextSet, config, schedule, weekKey))?.label || 'Every';
   return (
     <div className="rounded-2xl p-6" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
       <div className="flex items-center justify-between mb-3">
@@ -1156,6 +1202,60 @@ function NextSetCard({ nextSet, dueInfo, config, showStart, setShowStart, crewMe
   );
 }
 
+// Shows the field-wide AFI pattern that "Auto" sections will run this
+// calendar week, and lets the crew override it for just this week.
+function WeekPatternCard({ config, schedule, weekKey, onSetOverride }) {
+  const autoSets = config.sets.filter(s => s.active !== false && (s.afiMode || 'every') === 'auto');
+  if (autoSets.length === 0) return null;
+
+  const computed = computeAutoAfiMode(config.plantingDate, weekKey);
+  const override = schedule?.afiOverrides?.[weekKey] || null;
+  const effective = override || computed;
+
+  return (
+    <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>
+          This Week's Pattern
+        </div>
+        {override && (
+          <button onClick={() => onSetOverride(weekKey, null)} className="text-xs font-semibold" style={{ color: '#F59E0B' }}>
+            Reset to auto
+          </button>
+        )}
+      </div>
+      <div className="font-display text-2xl mb-1">
+        {AFI_MODE_OPTIONS.find(o => o.id === effective)?.label} rows
+      </div>
+      <div className="text-xs mb-3" style={{ color: '#8C9683' }}>
+        {override
+          ? `Manually set for this week · auto would be ${AFI_MODE_OPTIONS.find(o => o.id === computed)?.label.toLowerCase()}`
+          : `Auto-calculated from your planting date · applies to ${autoSets.length} section${autoSets.length === 1 ? '' : 's'}`}
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {['every', 'evens', 'odds'].map(id => {
+          const opt = AFI_MODE_OPTIONS.find(o => o.id === id);
+          const isSelected = effective === id;
+          return (
+            <button
+              key={id}
+              onClick={() => onSetOverride(weekKey, id === computed ? null : id)}
+              className="py-2 rounded-lg text-center text-sm font-semibold"
+              style={{
+                background: isSelected ? '#FACC15' : '#0B0F08',
+                color: isSelected ? '#0B0F08' : '#F5F7F0',
+                border: '1px solid #2A3525'
+              }}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function WeekProgress({ setsDone, totalSets }) {
   const pct = totalSets > 0 ? (setsDone / totalSets) * 100 : 0;
   return (
@@ -1207,6 +1307,7 @@ function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, 
               isActive={isActive}
               isDone={isDone}
               photoCount={photoCount}
+              afiMode={resolveAfiMode(set, config, schedule, weekKey)}
               onStart={() => onStart(set.id, config.crew[0], set.hours)}
               onReset={() => onResetSet(set.id)}
               onOpenPhotos={() => setPhotoSetId(set.id)}
@@ -1230,9 +1331,9 @@ function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, 
   );
 }
 
-function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, onStart, onReset, onOpenPhotos, canStart }) {
+function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, afiMode, onStart, onReset, onOpenPhotos, canStart }) {
   const [expanded, setExpanded] = useState(false);
-  const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === (set.afiMode || 'every'))?.label || 'Every';
+  const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === (afiMode || 'every'))?.label || 'Every';
 
   return (
     <div style={{ borderBottom: '1px solid #2A3525' }}>
@@ -1833,7 +1934,7 @@ function SetupView({ config, onSave }) {
       gates: 1,
       hours: local.defaultSetHours || 8,
       frequencyDays: 3,
-      afiMode: 'every',
+      afiMode: 'auto',
       order: maxOrder + 1,
       active: true
     };
@@ -1937,6 +2038,8 @@ function SetupView({ config, onSave }) {
           </button>
         </div>
       </div>
+
+      <WateringPatternCard local={local} setLocal={setLocal} />
 
       <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
         <div className="flex items-center justify-between mb-3">
@@ -2044,6 +2147,45 @@ function NotificationsCard() {
             <div className="text-xs mt-2" style={{ color: '#FACC15' }}>{error}</div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// Lets the user switch every active section onto the field-wide "Auto"
+// AFI schedule (every row the planting week, then alternating evens/odds
+// each week after) in one tap, instead of editing each section by hand.
+function WateringPatternCard({ local, setLocal }) {
+  const activeSets = local.sets.filter(s => s.active !== false);
+  const autoCount = activeSets.filter(s => (s.afiMode || 'every') === 'auto').length;
+  const allAuto = activeSets.length > 0 && autoCount === activeSets.length;
+
+  function applyAutoToAll() {
+    setLocal({
+      ...local,
+      sets: local.sets.map(s => s.active !== false ? { ...s, afiMode: 'auto' } : s)
+    });
+  }
+
+  return (
+    <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>Watering Pattern</div>
+      <div className="text-sm mb-3" style={{ color: '#8C9683' }}>
+        "Auto" alternates the whole field by calendar week — every row during the week of planting,
+        then evens and odds alternate week to week. You can override any single week from the Now tab.
+      </div>
+      {allAuto ? (
+        <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: '#A3E635' }}>
+          <CheckCircle className="w-4 h-4" /> All sections on Auto
+        </div>
+      ) : (
+        <button
+          onClick={applyAutoToAll}
+          className="w-full py-3 rounded-xl text-sm font-semibold active:scale-95 transition-transform"
+          style={{ background: '#FACC15', color: '#0B0F08' }}
+        >
+          Switch all sections to Auto ({autoCount}/{activeSets.length} currently)
+        </button>
       )}
     </div>
   );
@@ -2177,7 +2319,7 @@ function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown
 
           <div>
             <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Pattern</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               {AFI_MODE_OPTIONS.map(opt => (
                 <button
                   key={opt.id}
