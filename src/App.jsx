@@ -11,7 +11,10 @@ import {
   registerServiceWorker, isPushSupported, getCurrentSubscription,
   enablePushNotifications, disablePushNotifications, broadcastPush
 } from './lib/push.js';
-import { signIn, signOut, getSession, onAuthStateChange } from './lib/auth.js';
+import {
+  signIn, signUp, signOut, getSession, onAuthStateChange,
+  getUserStatus, listAllUsers, decideUser, setUserAdmin
+} from './lib/auth.js';
 
 // ============================================================
 // STORAGE
@@ -548,6 +551,8 @@ export default function App() {
   const [tick, setTick] = useState(0);
   // undefined = still checking; null = signed out; object = signed in
   const [session, setSession] = useState(undefined);
+  // undefined = still checking; null = no row yet; object = { status, is_admin, ... }
+  const [userStatus, setUserStatus] = useState(undefined);
   const lastWriteAtRef = useRef(0);
 
   function recordWrite() {
@@ -568,8 +573,32 @@ export default function App() {
     return () => sub?.unsubscribe();
   }, []);
 
+  // Look up the signed-in user's approval status (and admin flag) whenever
+  // the session changes.
   useEffect(() => {
-    if (!session) return;
+    if (!session) {
+      setUserStatus(session === null ? null : undefined);
+      return;
+    }
+    let cancelled = false;
+    getUserStatus(session.user.id)
+      .then(s => { if (!cancelled) setUserStatus(s); })
+      .catch(() => { if (!cancelled) setUserStatus(null); });
+    return () => { cancelled = true; };
+  }, [session]);
+
+  // While waiting on approval, periodically re-check in case an admin has
+  // approved (or declined) the account in the meantime.
+  useEffect(() => {
+    if (!session || userStatus?.status !== 'pending') return;
+    const i = setInterval(() => {
+      getUserStatus(session.user.id).then(setUserStatus).catch(() => {});
+    }, 10000);
+    return () => clearInterval(i);
+  }, [session, userStatus?.status]);
+
+  useEffect(() => {
+    if (!session || userStatus?.status !== 'approved') return;
     loadAll();
     const interval = setInterval(() => {
       // Skip polling within 4 seconds of a local write to avoid stale-read races
@@ -577,7 +606,7 @@ export default function App() {
       loadAll();
     }, 10000);
     return () => clearInterval(interval);
-  }, [session]);
+  }, [session, userStatus?.status]);
 
   async function loadAll() {
     const c = migrateConfig(await getValue('config', DEFAULT_CONFIG));
@@ -825,6 +854,27 @@ export default function App() {
     return <LoginScreen />;
   }
 
+  if (userStatus === undefined) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+        <div className="text-center">
+          <Droplets className="w-12 h-12 mx-auto mb-3 opacity-50" />
+          <div>Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!userStatus || userStatus.status !== 'approved') {
+    return (
+      <AccountStatusScreen
+        status={userStatus?.status || 'pending'}
+        userEmail={session.user?.email}
+        onSignOut={signOut}
+      />
+    );
+  }
+
   if (loading || !config || !currentWeek || !schedule) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
@@ -903,7 +953,7 @@ export default function App() {
           />
         )}
         {view === 'setup' && (
-          <SetupView config={config} onSave={saveConfig} userEmail={session.user?.email} onSignOut={signOut} />
+          <SetupView config={config} onSave={saveConfig} userEmail={session.user?.email} userStatus={userStatus} onSignOut={signOut} />
         )}
         {view === 'history' && (
           <HistoryView currentWeekKey={weekKey} config={config} />
@@ -2084,7 +2134,7 @@ function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, 
   );
 }
 
-function SetupView({ config, onSave, userEmail, onSignOut }) {
+function SetupView({ config, onSave, userEmail, userStatus, onSignOut }) {
   const [local, setLocal] = useState(config);
   const [crewInput, setCrewInput] = useState('');
 
@@ -2279,7 +2329,9 @@ function SetupView({ config, onSave, userEmail, onSignOut }) {
 
       <NotificationsCard />
 
-      <AccountCard userEmail={userEmail} onSignOut={onSignOut} />
+      {userStatus?.is_admin && <PendingRequestsCard currentUserId={userStatus.id} />}
+
+      <AccountCard userEmail={userEmail} isAdmin={!!userStatus?.is_admin} onSignOut={onSignOut} />
 
       <button
         onClick={save}
@@ -2360,7 +2412,7 @@ function NotificationsCard() {
   );
 }
 
-function AccountCard({ userEmail, onSignOut }) {
+function AccountCard({ userEmail, isAdmin, onSignOut }) {
   const [signingOut, setSigningOut] = useState(false);
 
   async function handleSignOut() {
@@ -2379,6 +2431,14 @@ function AccountCard({ userEmail, onSignOut }) {
       <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>Account</div>
       <div className="text-sm mb-3" style={{ color: '#F5F7F0' }}>
         Signed in as <span style={{ color: '#FACC15' }}>{userEmail}</span>
+        {isAdmin && (
+          <span
+            className="ml-2 px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider"
+            style={{ background: '#A3E635', color: '#0B0F08' }}
+          >
+            Admin
+          </span>
+        )}
       </div>
       <button
         onClick={handleSignOut}
@@ -2389,6 +2449,138 @@ function AccountCard({ userEmail, onSignOut }) {
         <LogOut className="w-4 h-4" />
         {signingOut ? 'Signing out…' : 'Sign Out'}
       </button>
+    </div>
+  );
+}
+
+// Admin-only: lists every crew account that has ever signed up. Pending
+// accounts get Approve / Decline buttons; approved/declined accounts (other
+// than the current admin) get a toggle for the Admin permission level.
+function PendingRequestsCard({ currentUserId }) {
+  const [users, setUsers] = useState(null);
+  const [error, setError] = useState('');
+  const [busyId, setBusyId] = useState(null);
+
+  async function refresh() {
+    try {
+      setUsers(await listAllUsers());
+    } catch (e) {
+      setError(e.message || 'Could not load accounts.');
+    }
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  async function handleDecide(userId, approve) {
+    setBusyId(userId);
+    setError('');
+    try {
+      await decideUser(userId, approve);
+      await refresh();
+    } catch (e) {
+      setError(e.message || 'Something went wrong.');
+    }
+    setBusyId(null);
+  }
+
+  async function handleToggleAdmin(userId, makeAdmin) {
+    setBusyId(userId);
+    setError('');
+    try {
+      await setUserAdmin(userId, makeAdmin);
+      await refresh();
+    } catch (e) {
+      setError(e.message || 'Something went wrong.');
+    }
+    setBusyId(null);
+  }
+
+  if (users === null) return null;
+
+  const pending = users.filter(u => u.status === 'pending');
+  const decided = users.filter(u => u.status !== 'pending');
+
+  return (
+    <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <div className="text-xs uppercase tracking-[0.2em] mb-3 flex items-center gap-2" style={{ color: '#8C9683' }}>
+        <Users className="w-3 h-3" /> Crew Accounts
+      </div>
+
+      {error && (
+        <div className="text-sm p-3 rounded-xl mb-3" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#FCA5A5', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+          {error}
+        </div>
+      )}
+
+      {pending.length > 0 && (
+        <div className="space-y-2 mb-4">
+          <div className="text-xs uppercase tracking-wider" style={{ color: '#FACC15' }}>Pending Requests</div>
+          {pending.map(u => (
+            <div key={u.id} className="flex items-center justify-between gap-2 p-3 rounded-xl" style={{ background: '#0B0F08' }}>
+              <span className="text-sm break-all" style={{ color: '#F5F7F0' }}>{u.email}</span>
+              <div className="flex gap-2 flex-shrink-0">
+                <button
+                  onClick={() => handleDecide(u.id, true)}
+                  disabled={busyId === u.id}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold active:scale-95 transition-transform"
+                  style={{ background: '#A3E635', color: '#0B0F08' }}
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => handleDecide(u.id, false)}
+                  disabled={busyId === u.id}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold active:scale-95 transition-transform"
+                  style={{ background: '#151A11', color: '#8C9683', border: '1px solid #2A3525' }}
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <div className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>
+          {pending.length > 0 ? 'Other Accounts' : 'Crew Accounts'}
+        </div>
+        {decided.length === 0 && pending.length === 0 && (
+          <div className="text-sm" style={{ color: '#8C9683' }}>No accounts yet.</div>
+        )}
+        {decided.map(u => (
+          <div key={u.id} className="flex items-center justify-between gap-2 p-3 rounded-xl" style={{ background: '#0B0F08' }}>
+            <div className="min-w-0">
+              <div className="text-sm break-all" style={{ color: '#F5F7F0' }}>{u.email}</div>
+              <div className="text-xs capitalize" style={{ color: u.status === 'declined' ? '#FCA5A5' : '#8C9683' }}>
+                {u.status}
+              </div>
+            </div>
+            {u.status === 'approved' && u.id !== currentUserId && (
+              <button
+                onClick={() => handleToggleAdmin(u.id, !u.is_admin)}
+                disabled={busyId === u.id}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold active:scale-95 transition-transform flex-shrink-0"
+                style={{
+                  background: u.is_admin ? '#A3E635' : '#151A11',
+                  color: u.is_admin ? '#0B0F08' : '#8C9683',
+                  border: '1px solid #2A3525'
+                }}
+              >
+                {u.is_admin ? 'Admin' : 'Make Admin'}
+              </button>
+            )}
+            {u.id === currentUserId && (
+              <span
+                className="px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider flex-shrink-0"
+                style={{ background: '#A3E635', color: '#0B0F08' }}
+              >
+                You
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -4599,22 +4791,50 @@ function BottomNav({ view, setView, hasActive }) {
 }
 
 function LoginScreen() {
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
+
+  function switchMode(next) {
+    setMode(next);
+    setError('');
+    setInfo('');
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
+    setInfo('');
     setLoading(true);
     try {
-      await signIn(email.trim(), password);
-      // onAuthStateChange in App() picks up the new session from here.
+      if (mode === 'signin') {
+        await signIn(email.trim(), password);
+        // onAuthStateChange in App() picks up the new session from here.
+      } else {
+        const session = await signUp(email.trim(), password);
+        if (session) {
+          // Signed in immediately — onAuthStateChange in App() takes it from here.
+        } else {
+          setInfo('Account created! A farm admin needs to approve it before you can sign in — check back soon.');
+          setMode('signin');
+          setPassword('');
+        }
+      }
     } catch (err) {
-      setError('Email or password is incorrect. Ask your farm admin if you need an account set up.');
-      setLoading(false);
+      if (mode === 'signin') {
+        setError('Email or password is incorrect.');
+      } else {
+        setError(
+          /already registered|already exists/i.test(err.message || '')
+            ? 'An account with that email already exists. Try signing in instead.'
+            : (err.message || 'Could not create account.')
+        );
+      }
     }
+    setLoading(false);
   }
 
   return (
@@ -4623,7 +4843,9 @@ function LoginScreen() {
         <div className="text-center mb-8">
           <Droplets className="w-12 h-12 mx-auto mb-3" style={{ color: '#FACC15' }} />
           <div className="text-2xl font-bold" style={{ fontFamily: "'Bricolage Grotesque', system-ui, sans-serif" }}>Irrigation Tracker</div>
-          <div className="text-sm mt-1" style={{ color: '#8C9683' }}>Sign in to view and manage the field</div>
+          <div className="text-sm mt-1" style={{ color: '#8C9683' }}>
+            {mode === 'signin' ? 'Sign in to view and manage the field' : 'Create an account to request access'}
+          </div>
         </div>
         <form onSubmit={handleSubmit} className="rounded-2xl p-5 space-y-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
           <div>
@@ -4642,14 +4864,21 @@ function LoginScreen() {
             <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Password</label>
             <input
               type="password"
-              autoComplete="current-password"
+              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              minLength={6}
               className="w-full p-3 rounded-xl"
               style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
             />
           </div>
+          {info && (
+            <div className="text-sm p-3 rounded-xl flex items-start gap-2" style={{ background: 'rgba(163, 230, 53, 0.1)', color: '#A3E635', border: '1px solid rgba(163, 230, 53, 0.3)' }}>
+              <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{info}</span>
+            </div>
+          )}
           {error && (
             <div className="text-sm p-3 rounded-xl flex items-start gap-2" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#FCA5A5', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
               <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -4663,11 +4892,66 @@ function LoginScreen() {
             style={{ background: '#FACC15', color: '#0B0F08', opacity: loading ? 0.6 : 1 }}
           >
             <Lock className="w-4 h-4" />
-            {loading ? 'Signing in…' : 'Sign In'}
+            {loading ? (mode === 'signin' ? 'Signing in…' : 'Creating account…') : (mode === 'signin' ? 'Sign In' : 'Create Account')}
           </button>
         </form>
         <div className="text-center text-xs mt-4" style={{ color: '#8C9683' }}>
-          Need an account? Ask your farm admin to set one up.
+          {mode === 'signin' ? (
+            <>Need an account? <button type="button" onClick={() => switchMode('signup')} className="underline" style={{ color: '#FACC15' }}>Create one</button></>
+          ) : (
+            <>Already have an account? <button type="button" onClick={() => switchMode('signin')} className="underline" style={{ color: '#FACC15' }}>Sign in</button></>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Shown to signed-in users whose user_status row isn't "approved" yet —
+// either still pending review, or declined by an admin.
+function AccountStatusScreen({ status, userEmail, onSignOut }) {
+  const [signingOut, setSigningOut] = useState(false);
+  const declined = status === 'declined';
+
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      await onSignOut();
+    } catch (e) {
+      console.error('Sign out failed', e);
+      setSigningOut(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+      <div className="w-full max-w-sm">
+        <div className="rounded-2xl p-6 text-center" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+          {declined ? (
+            <AlertCircle className="w-10 h-10 mx-auto mb-3" style={{ color: '#FCA5A5' }} />
+          ) : (
+            <Clock className="w-10 h-10 mx-auto mb-3" style={{ color: '#FACC15' }} />
+          )}
+          <div className="text-xl font-bold mb-2" style={{ fontFamily: "'Bricolage Grotesque', system-ui, sans-serif" }}>
+            {declined ? 'Access Declined' : 'Waiting for Approval'}
+          </div>
+          <div className="text-sm mb-1" style={{ color: '#8C9683' }}>
+            {userEmail}
+          </div>
+          <div className="text-sm mt-3" style={{ color: '#8C9683' }}>
+            {declined
+              ? 'A farm admin has declined this account. Contact your farm admin if you think this is a mistake.'
+              : "A farm admin needs to approve your account before you can see field data. This page will update automatically once you're approved."}
+          </div>
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="w-full mt-5 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold active:scale-95 transition-transform"
+            style={{ background: '#0B0F08', color: '#8C9683', border: '1px solid #2A3525' }}
+          >
+            <LogOut className="w-4 h-4" />
+            {signingOut ? 'Signing out…' : 'Sign Out'}
+          </button>
         </div>
       </div>
     </div>

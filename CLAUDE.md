@@ -78,15 +78,33 @@ The field runs through its active sections back-to-back, in `order`, each for it
 - It auto-expires: once real time passes `postponedUntil`, it's ignored and the schedule behaves normally again — no need to clear it. `PostponeCard` also offers "Resume Now" to clear it early.
 - `supabase/functions/notify/index.ts`'s `checkSectionsDue()` also respects `postponedUntil` so the "due to water" push doesn't fire during a postponement.
 
-## Authentication
+## Authentication & permissions
 
-The app requires sign-in (Supabase Auth, email/password). All data stays shared across everyone who's logged in — auth is purely a login gate, not per-user data partitioning.
+The app requires sign-in (Supabase Auth, email/password). All data stays shared across everyone who's approved — auth/approval is a login gate, not per-user data partitioning.
 
-- `src/lib/auth.js` wraps `signIn`, `signOut`, `getSession`, `onAuthStateChange`.
-- In `App()`, `session` state is `undefined` (still checking) → loading screen, `null` (signed out) → `<LoginScreen />`, or the session object → normal app. The `loadAll()` polling effect is gated on `session` being truthy.
-- `SetupView` renders an `AccountCard` showing the signed-in email with a Sign Out button.
-- There's no self-service signup or password reset. The farm admin creates/removes/resets crew accounts in the Supabase Dashboard (Authentication → Users) — see README "Create logins for your crew".
-- `kv_storage`'s RLS policy requires `auth.role() = 'authenticated'` (see `supabase/schema.sql`). The `notify` Edge Function uses the service role key and bypasses RLS, so it's unaffected.
+- `src/lib/auth.js` wraps `signIn`, `signUp`, `signOut`, `getSession`, `onAuthStateChange`, plus the `user_status` helpers below.
+- In `App()`, `session` state is `undefined` (still checking) → loading screen, `null` (signed out) → `<LoginScreen />`, or the session object → continue to the approval check. The `loadAll()` polling effect is gated on `session` being truthy AND `userStatus?.status === 'approved'`.
+- `SetupView` renders an `AccountCard` showing the signed-in email (with an "Admin" badge for admins) and a Sign Out button.
+
+### Self-signup & admin approval
+
+Anyone can create an account from `<LoginScreen />` ("Create one" link, calls `signUp()`). New accounts aren't usable right away:
+
+- `supabase/schema.sql` defines a `user_status` table: `{ id, email, status ('pending'|'approved'|'declined'), is_admin, requested_at, decided_at, decided_by }`, populated by an `on_auth_user_created` trigger (`handle_new_user()`).
+- The trigger auto-approves the **first-ever** account as an admin (so a fresh deployment always has someone who can approve others). Every account that existed *before* this feature was added is also backfilled as `status='approved', is_admin=true`. Everyone else starts `status='pending', is_admin=false`.
+- In `App()`, after `session` resolves to a user, a `userStatus` state (`undefined`=checking, `null`/`{status:'pending'|'declined'|'approved', is_admin, ...}`) is loaded via `getUserStatus(session.user.id)`. If `userStatus` isn't `approved`, `<AccountStatusScreen />` is shown instead of the app — "waiting for approval" (pending) or "access declined". A polling effect re-checks every 10s while pending so the screen updates automatically once an admin decides.
+- `kv_storage`'s RLS policy requires `is_approved()` (a `security definer` SQL function checking `user_status`), not just `auth.role() = 'authenticated'` — see `supabase/schema.sql`. The `notify` Edge Function uses the service role key and bypasses RLS, so it's unaffected.
+
+### Admin vs. standard user
+
+`userStatus.is_admin` is the permission flag. Admins get a `PendingRequestsCard` in `SetupView` (only rendered when `userStatus?.is_admin`) that lists every account via `listAllUsers()`:
+
+- **Pending accounts** get Approve / Decline buttons (`decideUser(id, true|false)`).
+- **Approved accounts** (other than yourself) get a "Make Admin" / "Admin" toggle (`setUserAdmin(id, bool)`) to promote/demote other admins.
+
+`user_status` RLS: everyone can read their own row; only approved admins (`is_approved_admin()`) can read all rows or update any row (approve/decline/promote). Standard users see the normal app (Now/Week/Notes/Plan/etc.) but not the Crew Accounts card.
+
+The farm admin can still create/remove/reset crew accounts manually in the Supabase Dashboard (Authentication → Users) if preferred — see README "Create logins for your crew".
 
 ## Push notifications
 

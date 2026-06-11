@@ -40,9 +40,28 @@ Keep these two values handy for Step 2.
 
 > **Want to test on your computer first?** Run `cp .env.example .env`, paste your two Supabase values into `.env`, then `npm run dev` and open `http://localhost:5173`. Totally optional — Vercel works fine without this.
 
-### Create logins for your crew
+### Turn on crew sign-up
 
-The app now requires everyone to sign in — but once signed in, everyone sees and shares the same data. There's no public sign-up page; you create each account yourself:
+The app requires everyone to sign in — but once approved, everyone sees and shares the same data. Crew members can create their own accounts from the sign-in screen ("Create one"), but a few settings need to be checked first:
+
+1. In Supabase, click **Authentication** (left sidebar) → **Sign In / Providers** → **Email**
+2. Make sure **Allow new users to sign up** is **ON**
+3. Turn **Confirm email** **OFF** (crew "emails" don't need to be real inboxes — see below — so there's no inbox to click a confirmation link from)
+4. Click **Save**
+
+That's it — the app handles the rest:
+
+- The **first person** to create an account becomes an **admin** automatically.
+- Everyone after that lands on a "Waiting for Approval" screen until an admin approves them from **Setup → Crew Accounts** in the app.
+- Admins can approve/decline new sign-ups and promote other approved users to admin from that same card.
+
+**Whoever sets this up first should create their own account first** — that's how you become the first admin.
+
+> Email doesn't need to be a real inbox crew members check — it's just their username. Something like `firstname@yourfarm.local` works fine.
+
+### Create logins for your crew (manual alternative)
+
+If you'd rather create accounts yourself instead of having crew sign up:
 
 1. In Supabase, click **Authentication** (left sidebar) → **Users** → **Add user** → **Create new user**
 2. For each crew member:
@@ -51,6 +70,8 @@ The app now requires everyone to sign in — but once signed in, everyone sees a
    - Turn **Auto Confirm User** ON
    - Click **Create user**
 3. Give each person their email + password — that's what they'll use on the app's sign-in screen
+
+Accounts created this way (and any account that existed before the sign-up feature was added) are automatically approved as admins, so they skip the "Waiting for Approval" step.
 
 **To remove someone's access** later, go to **Authentication → Users**, click their row, and **Delete user**.
 **To reset someone's password**, click their row → **Reset password** (or just delete and re-create the account with a new password).
@@ -176,6 +197,12 @@ Most likely the environment variables aren't set in Vercel. Go to your Vercel pr
 **"A crew member can't sign in / forgot their password."**
 Go to Supabase → **Authentication → Users**, click their row, and use **Reset password** (or delete and re-create the account with a new password — see "Create logins for your crew" in Step 1).
 
+**"A new crew member signed up but is stuck on 'Waiting for Approval'."**
+An admin needs to approve them: open the app → **Setup → Crew Accounts**, find their email under "Pending Requests", and tap **Approve**.
+
+**"Sign-up says 'Database error saving new user' or doesn't create an account."**
+Make sure `schema.sql` has been run (it creates the `user_status` table and the trigger that sets up new accounts), and that **Confirm email** is turned **OFF** under Supabase → **Authentication → Providers → Email** (see "Turn on crew sign-up" in Step 1).
+
 **"Data is shared between everyone — what if I want separate fields/users?"**
 Everyone who signs in shares the same data — that's intentional for a single-farm crew. If you ever need multi-farm support (separate fields/data per login), that's a future upgrade.
 
@@ -196,7 +223,7 @@ If you want to make changes:
 
 - `src/App.jsx` — the entire app (all UI, all logic)
 - `src/lib/storage.js` — the Supabase adapter (translates app storage calls to database queries)
-- `src/lib/auth.js` — sign-in/sign-out helpers for the crew login screen
+- `src/lib/auth.js` — sign-in/sign-up/sign-out helpers and admin approval functions for the crew login screen
 - `src/lib/push.js` — push notification helpers (subscribe/unsubscribe, sending alerts)
 - `public/sw.js` — service worker that receives push notifications
 - `src/main.jsx` — entry point (probably won't touch)
