@@ -5,12 +5,13 @@ import {
   Square, Activity, Users, ChevronDown, ChevronUp, Trash2,
   X, Bell, Camera, MessageSquare, Plus,
   Image as ImageIcon, Send, ListChecks, BellOff,
-  Sprout, Eye, TrendingUp, Sun
+  Sprout, Eye, TrendingUp, Sun, LogOut, Lock
 } from 'lucide-react';
 import {
   registerServiceWorker, isPushSupported, getCurrentSubscription,
   enablePushNotifications, disablePushNotifications, broadcastPush
 } from './lib/push.js';
+import { signIn, signOut, getSession, onAuthStateChange } from './lib/auth.js';
 
 // ============================================================
 // STORAGE
@@ -478,6 +479,8 @@ export default function App() {
   const [dayKey] = useState(getDayKey());
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
+  // undefined = still checking; null = signed out; object = signed in
+  const [session, setSession] = useState(undefined);
   const lastWriteAtRef = useRef(0);
 
   function recordWrite() {
@@ -493,6 +496,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    getSession().then(setSession).catch(() => setSession(null));
+    const sub = onAuthStateChange(setSession);
+    return () => sub?.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
     loadAll();
     const interval = setInterval(() => {
       // Skip polling within 4 seconds of a local write to avoid stale-read races
@@ -500,7 +510,7 @@ export default function App() {
       loadAll();
     }, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [session]);
 
   async function loadAll() {
     const c = migrateConfig(await getValue('config', DEFAULT_CONFIG));
@@ -723,6 +733,21 @@ export default function App() {
     await saveTodayNote(newNote);
   }
 
+  if (session === undefined) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+        <div className="text-center">
+          <Droplets className="w-12 h-12 mx-auto mb-3 opacity-50" />
+          <div>Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (session === null) {
+    return <LoginScreen />;
+  }
+
   if (loading || !config || !currentWeek || !schedule) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
@@ -800,7 +825,7 @@ export default function App() {
           />
         )}
         {view === 'setup' && (
-          <SetupView config={config} onSave={saveConfig} />
+          <SetupView config={config} onSave={saveConfig} userEmail={session.user?.email} onSignOut={signOut} />
         )}
         {view === 'history' && (
           <HistoryView currentWeekKey={weekKey} config={config} />
@@ -1898,7 +1923,7 @@ function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, 
   );
 }
 
-function SetupView({ config, onSave }) {
+function SetupView({ config, onSave, userEmail, onSignOut }) {
   const [local, setLocal] = useState(config);
   const [crewInput, setCrewInput] = useState('');
 
@@ -2073,6 +2098,8 @@ function SetupView({ config, onSave }) {
 
       <NotificationsCard />
 
+      <AccountCard userEmail={userEmail} onSignOut={onSignOut} />
+
       <button
         onClick={save}
         className="w-full py-4 rounded-xl font-bold text-lg glow-amber active:scale-95 transition-transform"
@@ -2148,6 +2175,39 @@ function NotificationsCard() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function AccountCard({ userEmail, onSignOut }) {
+  const [signingOut, setSigningOut] = useState(false);
+
+  async function handleSignOut() {
+    if (!window.confirm('Sign out of this device?')) return;
+    setSigningOut(true);
+    try {
+      await onSignOut();
+    } catch (e) {
+      console.error('Sign out failed', e);
+      setSigningOut(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+      <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>Account</div>
+      <div className="text-sm mb-3" style={{ color: '#F5F7F0' }}>
+        Signed in as <span style={{ color: '#FACC15' }}>{userEmail}</span>
+      </div>
+      <button
+        onClick={handleSignOut}
+        disabled={signingOut}
+        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold active:scale-95 transition-transform"
+        style={{ background: '#151A11', color: '#8C9683', border: '1px solid #2A3525' }}
+      >
+        <LogOut className="w-4 h-4" />
+        {signingOut ? 'Signing out…' : 'Sign Out'}
+      </button>
     </div>
   );
 }
@@ -4352,6 +4412,82 @@ function BottomNav({ view, setView, hasActive }) {
             </button>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await signIn(email.trim(), password);
+      // onAuthStateChange in App() picks up the new session from here.
+    } catch (err) {
+      setError('Email or password is incorrect. Ask your farm admin if you need an account set up.');
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-8">
+          <Droplets className="w-12 h-12 mx-auto mb-3" style={{ color: '#FACC15' }} />
+          <div className="text-2xl font-bold" style={{ fontFamily: "'Bricolage Grotesque', system-ui, sans-serif" }}>Irrigation Tracker</div>
+          <div className="text-sm mt-1" style={{ color: '#8C9683' }}>Sign in to view and manage the field</div>
+        </div>
+        <form onSubmit={handleSubmit} className="rounded-2xl p-5 space-y-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+          <div>
+            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Email</label>
+            <input
+              type="email"
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="w-full p-3 rounded-xl"
+              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+            />
+          </div>
+          <div>
+            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Password</label>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              className="w-full p-3 rounded-xl"
+              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+            />
+          </div>
+          {error && (
+            <div className="text-sm p-3 rounded-xl flex items-start gap-2" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#FCA5A5', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full p-3 rounded-xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-transform"
+            style={{ background: '#FACC15', color: '#0B0F08', opacity: loading ? 0.6 : 1 }}
+          >
+            <Lock className="w-4 h-4" />
+            {loading ? 'Signing in…' : 'Sign In'}
+          </button>
+        </form>
+        <div className="text-center text-xs mt-4" style={{ color: '#8C9683' }}>
+          Need an account? Ask your farm admin to set one up.
+        </div>
       </div>
     </div>
   );

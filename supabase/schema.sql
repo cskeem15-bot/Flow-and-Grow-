@@ -12,17 +12,19 @@ create table if not exists kv_storage (
 
 create index if not exists kv_storage_key_prefix_idx on kv_storage (key text_pattern_ops);
 
--- For a single-farm operation, allow all access via the anon key.
--- If you ever add auth or multi-tenant support, replace this with
--- per-user row-level security policies.
+-- All data is shared across the crew, but only signed-in users (created
+-- by the farm admin in Authentication -> Users) may read or write it.
+-- The "notify" Edge Function uses the service role key, which bypasses RLS,
+-- so scheduled notifications keep working regardless of this policy.
 alter table kv_storage enable row level security;
 
 drop policy if exists "Allow all operations" on kv_storage;
-create policy "Allow all operations"
+drop policy if exists "Allow authenticated access" on kv_storage;
+create policy "Allow authenticated access"
   on kv_storage
   for all
-  using (true)
-  with check (true);
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
 
 -- ============================================================
 -- Push notification scheduling (optional)

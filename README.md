@@ -40,6 +40,21 @@ Keep these two values handy for Step 2.
 
 > **Want to test on your computer first?** Run `cp .env.example .env`, paste your two Supabase values into `.env`, then `npm run dev` and open `http://localhost:5173`. Totally optional — Vercel works fine without this.
 
+### Create logins for your crew
+
+The app now requires everyone to sign in — but once signed in, everyone sees and shares the same data. There's no public sign-up page; you create each account yourself:
+
+1. In Supabase, click **Authentication** (left sidebar) → **Users** → **Add user** → **Create new user**
+2. For each crew member:
+   - **Email**: their email address (doesn't need to be a real inbox they check — it's just their username)
+   - **Password**: make one up and write it down to share with them
+   - Turn **Auto Confirm User** ON
+   - Click **Create user**
+3. Give each person their email + password — that's what they'll use on the app's sign-in screen
+
+**To remove someone's access** later, go to **Authentication → Users**, click their row, and **Delete user**.
+**To reset someone's password**, click their row → **Reset password** (or just delete and re-create the account with a new password).
+
 ---
 
 ## Step 2 — Put the app online (Vercel)
@@ -158,8 +173,11 @@ Check that `schema.sql` was run in Supabase, and that `VITE_SUPABASE_URL` / `VIT
 **"It works locally but not on Vercel."**
 Most likely the environment variables aren't set in Vercel. Go to your Vercel project → Settings → Environment Variables → make sure both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are set, then redeploy.
 
+**"A crew member can't sign in / forgot their password."**
+Go to Supabase → **Authentication → Users**, click their row, and use **Reset password** (or delete and re-create the account with a new password — see "Create logins for your crew" in Step 1).
+
 **"Data is shared between everyone — what if I want separate fields/users?"**
-The current setup is intentionally simple: one farm, one database, shared between crew. If you ever need multi-farm support or per-user logins, that's a future upgrade — Supabase has full auth built in.
+Everyone who signs in shares the same data — that's intentional for a single-farm crew. If you ever need multi-farm support (separate fields/data per login), that's a future upgrade.
 
 **"How do I back up my data?"**
 Supabase → Database → Backups. Free plan keeps daily backups for 7 days. You can also export the `kv_storage` table as CSV anytime from the Table Editor.
@@ -178,6 +196,7 @@ If you want to make changes:
 
 - `src/App.jsx` — the entire app (all UI, all logic)
 - `src/lib/storage.js` — the Supabase adapter (translates app storage calls to database queries)
+- `src/lib/auth.js` — sign-in/sign-out helpers for the crew login screen
 - `src/lib/push.js` — push notification helpers (subscribe/unsubscribe, sending alerts)
 - `public/sw.js` — service worker that receives push notifications
 - `src/main.jsx` — entry point (probably won't touch)

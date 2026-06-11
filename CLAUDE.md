@@ -30,7 +30,8 @@ This is an irrigation tracking app for a Utah corn maze farm. The user is NOT a 
 │   ├── main.jsx          ← entry point, attaches storage to window
 │   ├── index.css         ← Tailwind + global styles
 │   └── lib/
-│       ├── storage.js    ← Supabase adapter
+│       ├── storage.js    ← Supabase adapter (also exports the raw `supabase` client)
+│       ├── auth.js       ← sign-in/sign-out helpers for the login screen
 │       └── push.js       ← push notification helpers (subscribe, broadcast)
 └── supabase/
     ├── schema.sql        ← one-time database setup + notification cron
@@ -58,6 +59,16 @@ Storage keys follow these prefixes:
 - `notifystate` — dedup state for the `notify` Edge Function (last reminder date, last "due" notification per set, last timer notification), so it doesn't repeat alerts
 
 When making changes to data shape, update the relevant section in App.jsx — there's no separate schema definition outside that file.
+
+## Authentication
+
+The app requires sign-in (Supabase Auth, email/password). All data stays shared across everyone who's logged in — auth is purely a login gate, not per-user data partitioning.
+
+- `src/lib/auth.js` wraps `signIn`, `signOut`, `getSession`, `onAuthStateChange`.
+- In `App()`, `session` state is `undefined` (still checking) → loading screen, `null` (signed out) → `<LoginScreen />`, or the session object → normal app. The `loadAll()` polling effect is gated on `session` being truthy.
+- `SetupView` renders an `AccountCard` showing the signed-in email with a Sign Out button.
+- There's no self-service signup or password reset. The farm admin creates/removes/resets crew accounts in the Supabase Dashboard (Authentication → Users) — see README "Create logins for your crew".
+- `kv_storage`'s RLS policy requires `auth.role() = 'authenticated'` (see `supabase/schema.sql`). The `notify` Edge Function uses the service role key and bypasses RLS, so it's unaffected.
 
 ## Push notifications
 
@@ -100,7 +111,7 @@ npm run build
 - "Add a feature for X" — edit `App.jsx`, follow existing patterns
 - "Why is my data not saving" — check `.env` is set, check Supabase RLS policy is active, check browser console for errors
 - "Make it work offline" — would need to add a service worker and IndexedDB caching layer; nontrivial, scope this carefully
-- "Add user logins" — Supabase has Auth built in; integrate by creating a login screen and adding auth.uid() checks to RLS policies
+- "Add a crew member" / "someone can't log in" — point them to README "Create logins for your crew" (Supabase Dashboard → Authentication → Users)
 
 When the user says "the app is broken," ask them:
 1. Are you running locally (`npm run dev`) or on Vercel (the public URL)?
