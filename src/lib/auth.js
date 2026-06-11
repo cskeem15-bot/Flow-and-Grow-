@@ -22,16 +22,36 @@ export async function signOut() {
   if (error) throw error;
 }
 
+// Sends a "reset your password" email with a link back to this app.
+// Requires this app's URL to be added under Authentication -> URL
+// Configuration -> Redirect URLs in the Supabase dashboard.
+export async function requestPasswordReset(email) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin
+  });
+  if (error) throw error;
+}
+
+// Used on the "set a new password" screen, reached via the link from
+// requestPasswordReset(). Supabase has already signed the user into a
+// temporary recovery session by the time this is called.
+export async function updatePassword(newPassword) {
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw error;
+}
+
 export async function getSession() {
   const { data, error } = await supabase.auth.getSession();
   if (error) throw error;
   return data.session;
 }
 
-// Calls `callback(session)` immediately with the current state and again on
-// every sign-in/sign-out/token refresh. Returns the subscription to clean up.
+// Calls `callback(session, event)` immediately with the current state and
+// again on every sign-in/sign-out/token refresh/password-recovery. Returns
+// the subscription to clean up. `event` is `'PASSWORD_RECOVERY'` when the
+// user arrived via a password reset link.
 export function onAuthStateChange(callback) {
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => callback(session, event));
   return data.subscription;
 }
 

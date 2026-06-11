@@ -89,6 +89,18 @@ Accounts created this way (and any account that existed before the sign-up featu
 5. Click **Deploy** and wait 1–2 minutes
 6. Open the URL Vercel gives you (e.g. `flow-and-grow-xyz.vercel.app`) — the app is live
 
+### Point Supabase at your live URL
+
+This step makes "Forgot password?" (and any password reset emails) work correctly. Skip it and reset links will send people to `localhost`, which doesn't exist on their phone.
+
+1. Copy the URL Vercel gave you, e.g. `https://flow-and-grow-xyz.vercel.app`
+2. In Supabase, go to **Authentication** → **URL Configuration**
+3. Set **Site URL** to that URL (replacing the default `http://localhost:3000`)
+4. Under **Redirect URLs**, add the same URL (you can also add `https://flow-and-grow-xyz.vercel.app/**` to cover all pages)
+5. Click **Save**
+
+If you later add a custom domain, repeat this step with the new domain.
+
 ---
 
 ## Step 3 — Turn on notifications (optional)
@@ -195,7 +207,9 @@ Check that `schema.sql` was run in Supabase, and that `VITE_SUPABASE_URL` / `VIT
 Most likely the environment variables aren't set in Vercel. Go to your Vercel project → Settings → Environment Variables → make sure both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are set, then redeploy.
 
 **"A crew member can't sign in / forgot their password."**
-Go to Supabase → **Authentication → Users**, click their row, and use **Reset password** (or delete and re-create the account with a new password — see "Create logins for your crew" in Step 1).
+They can tap **Forgot password?** on the sign-in screen and enter their email — it'll send them a link to set a new password themselves. If they click the link and get a "can't connect to the server" / `localhost` error instead of the app, your Supabase **Site URL** is still set to `localhost` — fix it under **Authentication → URL Configuration** (see "Point Supabase at your live URL" in Step 2), then have them tap **Forgot password?** again.
+
+You (the admin) can also reset it for them: go to Supabase → **Authentication → Users**, click their row, and use **Reset password** (or delete and re-create the account with a new password — see "Create logins for your crew" in Step 1). This only works correctly once Site URL is fixed too.
 
 **"A new crew member signed up but is stuck on 'Waiting for Approval'."**
 An admin needs to approve them: open the app → **Setup → Crew Accounts**, find their email under "Pending Requests", and tap **Approve**.

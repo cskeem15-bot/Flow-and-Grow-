@@ -82,7 +82,7 @@ The field runs through its active sections back-to-back, in `order`, each for it
 
 The app requires sign-in (Supabase Auth, email/password). All data stays shared across everyone who's approved — auth/approval is a login gate, not per-user data partitioning.
 
-- `src/lib/auth.js` wraps `signIn`, `signUp`, `signOut`, `getSession`, `onAuthStateChange`, plus the `user_status` helpers below.
+- `src/lib/auth.js` wraps `signIn`, `signUp`, `signOut`, `getSession`, `onAuthStateChange`, `requestPasswordReset`, `updatePassword`, plus the `user_status` helpers below.
 - In `App()`, `session` state is `undefined` (still checking) → loading screen, `null` (signed out) → `<LoginScreen />`, or the session object → continue to the approval check. The `loadAll()` polling effect is gated on `session` being truthy AND `userStatus?.status === 'approved'`.
 - `SetupView` renders an `AccountCard` showing the signed-in email (with an "Admin" badge for admins) and a Sign Out button.
 
@@ -105,6 +105,15 @@ Anyone can create an account from `<LoginScreen />` ("Create one" link, calls `s
 `user_status` RLS: everyone can read their own row; only approved admins (`is_approved_admin()`) can read all rows or update any row (approve/decline/promote). Standard users see the normal app (Now/Week/Notes/Plan/etc.) but not the Crew Accounts card.
 
 The farm admin can still create/remove/reset crew accounts manually in the Supabase Dashboard (Authentication → Users) if preferred — see README "Create logins for your crew".
+
+### Forgot password / reset flow
+
+`<LoginScreen />` has a third mode (`'forgot'`), reached via the "Forgot password?" link in sign-in mode:
+
+- The user enters their email and `requestPasswordReset(email)` (`src/lib/auth.js`) calls `supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin })`, which emails them a link back to whatever URL the app is currently running at.
+- Clicking that link signs the user into a temporary recovery session and Supabase fires a `PASSWORD_RECOVERY` auth event. `onAuthStateChange` now passes `(session, event)` to its callback; in `App()`, that event sets `passwordRecovery` state to `true`.
+- While `passwordRecovery` is `true`, `App()` renders `<SetNewPasswordScreen />` instead of anything else (checked right after the initial session-loading screen, before the signed-out/approval checks). The user picks a new password (min 6 chars, must match a confirmation field), which is saved via `updatePassword(newPassword)`. "Cancel and sign out" signs out and returns to the normal login screen.
+- **Requires Supabase setup**: Authentication → URL Configuration → **Site URL** must be set to the deployed app's URL (e.g. `https://your-app.vercel.app`), not the default `localhost`. The same URL (or a wildcard) should also be listed under **Redirect URLs**. If Site URL is left as `localhost`, both this in-app flow and any recovery email an admin sends manually from the Supabase Dashboard will link to `localhost` and fail to load on a crew member's phone — see README "Turn on crew sign-up" and Troubleshooting.
 
 ## Push notifications
 

@@ -13,7 +13,8 @@ import {
 } from './lib/push.js';
 import {
   signIn, signUp, signOut, getSession, onAuthStateChange,
-  getUserStatus, listAllUsers, decideUser, setUserAdmin
+  getUserStatus, listAllUsers, decideUser, setUserAdmin,
+  requestPasswordReset, updatePassword
 } from './lib/auth.js';
 
 // ============================================================
@@ -553,6 +554,10 @@ export default function App() {
   const [session, setSession] = useState(undefined);
   // undefined = still checking; null = no row yet; object = { status, is_admin, ... }
   const [userStatus, setUserStatus] = useState(undefined);
+  // true once a PASSWORD_RECOVERY auth event arrives (user clicked a "reset
+  // password" email link) -- shows <SetNewPasswordScreen /> regardless of
+  // session/approval state.
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   const lastWriteAtRef = useRef(0);
 
   function recordWrite() {
@@ -569,7 +574,10 @@ export default function App() {
 
   useEffect(() => {
     getSession().then(setSession).catch(() => setSession(null));
-    const sub = onAuthStateChange(setSession);
+    const sub = onAuthStateChange((newSession, event) => {
+      setSession(newSession);
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
+    });
     return () => sub?.unsubscribe();
   }, []);
 
@@ -848,6 +856,10 @@ export default function App() {
         </div>
       </div>
     );
+  }
+
+  if (passwordRecovery) {
+    return <SetNewPasswordScreen onDone={() => setPasswordRecovery(false)} onSignOut={signOut} />;
   }
 
   if (session === null) {
@@ -4882,7 +4894,7 @@ function BottomNav({ view, setView, hasActive }) {
 }
 
 function LoginScreen() {
-  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup' | 'forgot'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -4904,7 +4916,7 @@ function LoginScreen() {
       if (mode === 'signin') {
         await signIn(email.trim(), password);
         // onAuthStateChange in App() picks up the new session from here.
-      } else {
+      } else if (mode === 'signup') {
         const session = await signUp(email.trim(), password);
         if (session) {
           // Signed in immediately — onAuthStateChange in App() takes it from here.
@@ -4913,20 +4925,43 @@ function LoginScreen() {
           setMode('signin');
           setPassword('');
         }
+      } else {
+        await requestPasswordReset(email.trim());
+        setInfo("Check your email for a link to reset your password. It can take a few minutes to arrive.");
+        setMode('signin');
+        setPassword('');
       }
     } catch (err) {
       if (mode === 'signin') {
         setError('Email or password is incorrect.');
-      } else {
+      } else if (mode === 'signup') {
         setError(
           /already registered|already exists/i.test(err.message || '')
             ? 'An account with that email already exists. Try signing in instead.'
             : (err.message || 'Could not create account.')
         );
+      } else {
+        setError(err.message || 'Could not send reset email.');
       }
     }
     setLoading(false);
   }
+
+  const titles = {
+    signin: 'Sign in to view and manage the field',
+    signup: 'Create an account to request access',
+    forgot: 'Enter your email to get a reset link'
+  };
+  const buttonLabels = {
+    signin: 'Sign In',
+    signup: 'Create Account',
+    forgot: 'Send Reset Link'
+  };
+  const loadingLabels = {
+    signin: 'Signing in…',
+    signup: 'Creating account…',
+    forgot: 'Sending…'
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
@@ -4934,9 +4969,7 @@ function LoginScreen() {
         <div className="text-center mb-8">
           <Droplets className="w-12 h-12 mx-auto mb-3" style={{ color: '#FACC15' }} />
           <div className="text-2xl font-bold" style={{ fontFamily: "'Bricolage Grotesque', system-ui, sans-serif" }}>Irrigation Tracker</div>
-          <div className="text-sm mt-1" style={{ color: '#8C9683' }}>
-            {mode === 'signin' ? 'Sign in to view and manage the field' : 'Create an account to request access'}
-          </div>
+          <div className="text-sm mt-1" style={{ color: '#8C9683' }}>{titles[mode]}</div>
         </div>
         <form onSubmit={handleSubmit} className="rounded-2xl p-5 space-y-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
           <div>
@@ -4951,19 +4984,31 @@ function LoginScreen() {
               style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
             />
           </div>
-          <div>
-            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Password</label>
-            <input
-              type="password"
-              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={6}
-              className="w-full p-3 rounded-xl"
-              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
-            />
-          </div>
+          {mode !== 'forgot' && (
+            <div>
+              <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Password</label>
+              <input
+                type="password"
+                autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                className="w-full p-3 rounded-xl"
+                style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+              />
+              {mode === 'signin' && (
+                <button
+                  type="button"
+                  onClick={() => switchMode('forgot')}
+                  className="text-xs underline mt-1.5"
+                  style={{ color: '#8C9683' }}
+                >
+                  Forgot password?
+                </button>
+              )}
+            </div>
+          )}
           {info && (
             <div className="text-sm p-3 rounded-xl flex items-start gap-2" style={{ background: 'rgba(163, 230, 53, 0.1)', color: '#A3E635', border: '1px solid rgba(163, 230, 53, 0.3)' }}>
               <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -4983,15 +5028,113 @@ function LoginScreen() {
             style={{ background: '#FACC15', color: '#0B0F08', opacity: loading ? 0.6 : 1 }}
           >
             <Lock className="w-4 h-4" />
-            {loading ? (mode === 'signin' ? 'Signing in…' : 'Creating account…') : (mode === 'signin' ? 'Sign In' : 'Create Account')}
+            {loading ? loadingLabels[mode] : buttonLabels[mode]}
           </button>
         </form>
         <div className="text-center text-xs mt-4" style={{ color: '#8C9683' }}>
-          {mode === 'signin' ? (
+          {mode === 'signin' && (
             <>Need an account? <button type="button" onClick={() => switchMode('signup')} className="underline" style={{ color: '#FACC15' }}>Create one</button></>
-          ) : (
+          )}
+          {mode === 'signup' && (
             <>Already have an account? <button type="button" onClick={() => switchMode('signin')} className="underline" style={{ color: '#FACC15' }}>Sign in</button></>
           )}
+          {mode === 'forgot' && (
+            <button type="button" onClick={() => switchMode('signin')} className="underline" style={{ color: '#FACC15' }}>Back to sign in</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Reached after the user clicks a "reset your password" email link — Supabase
+// signs them into a temporary recovery session and fires PASSWORD_RECOVERY,
+// which App() catches to show this instead of the normal app.
+function SetNewPasswordScreen({ onDone, onSignOut }) {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError('');
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    if (password !== confirm) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await updatePassword(password);
+      onDone();
+    } catch (err) {
+      setError(err.message || 'Could not update password.');
+      setLoading(false);
+    }
+  }
+
+  async function handleCancel() {
+    try { await onSignOut(); } catch {}
+    onDone();
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: '#0B0F08', color: '#F5F7F0', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-8">
+          <Lock className="w-12 h-12 mx-auto mb-3" style={{ color: '#FACC15' }} />
+          <div className="text-2xl font-bold" style={{ fontFamily: "'Bricolage Grotesque', system-ui, sans-serif" }}>Set a New Password</div>
+          <div className="text-sm mt-1" style={{ color: '#8C9683' }}>Choose a new password for your account</div>
+        </div>
+        <form onSubmit={handleSubmit} className="rounded-2xl p-5 space-y-4" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+          <div>
+            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>New Password</label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+              className="w-full p-3 rounded-xl"
+              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+            />
+          </div>
+          <div>
+            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Confirm Password</label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              required
+              minLength={6}
+              className="w-full p-3 rounded-xl"
+              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+            />
+          </div>
+          {error && (
+            <div className="text-sm p-3 rounded-xl flex items-start gap-2" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#FCA5A5', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full p-3 rounded-xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-transform"
+            style={{ background: '#FACC15', color: '#0B0F08', opacity: loading ? 0.6 : 1 }}
+          >
+            <Lock className="w-4 h-4" />
+            {loading ? 'Saving…' : 'Save New Password'}
+          </button>
+        </form>
+        <div className="text-center text-xs mt-4">
+          <button type="button" onClick={handleCancel} className="underline" style={{ color: '#8C9683' }}>Cancel and sign out</button>
         </div>
       </div>
     </div>
