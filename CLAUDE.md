@@ -78,6 +78,15 @@ The field runs through its active sections back-to-back, in `order`, each for it
 - It auto-expires: once real time passes `postponedUntil`, it's ignored and the schedule behaves normally again — no need to clear it. `PostponeCard` offers "+1/2/3/5/7 days" presets, a "Custom" date picker (sets `postponedUntil` to midnight local time on the chosen day), "Change Date" to pick a new value while already postponed, and "Resume Now" to clear it early.
 - `supabase/functions/notify/index.ts`'s `checkSectionsDue()` also respects `postponedUntil` so the "due to water" push doesn't fire during a postponement.
 
+## Tail Watch (advance & soak times)
+
+While a set is running, the "Tail Watch" card on the Now tab opens `TailWatchModal`, where the crew taps each row/furrow once water reaches the tail end. This writes `activeSet.rowAdvances[row] = Date.now()` via `markRowAdvanced()`. Tapping an already-marked row removes the entry (undo).
+
+- `computeAdvanceStats(rowAdvances, startedAt, setRows, endTime)` (`src/App.jsx`) is the shared helper: for each marked row it returns `{ row, ts, elapsed, soakMs }`, where `elapsed = ts - startedAt` (how long water took to reach the tail) and `soakMs = endTime - ts` (how long that furrow has been soaking since). `endTime` is optional — omit it where soak time isn't needed (e.g. `TailWatchSummary`'s compact card).
+- `TailWatchModal` passes `Date.now()` as `endTime` (recomputed every second via its `tick` interval) so the "Soak (1st)" stat and the per-row "Soak Times" list update live while the set is still running.
+- `SetLogDetails` (the expandable history row, shown once a set is completed) passes `status.completedAt` as `endTime`, so "Avg soak" / "Min soak" and the "Soak Time by Furrow" list reflect how long each furrow soaked between its tail-water arrival and when the set was shut off. `rowAdvances` is carried into `status` when a set completes (see `completeSet()`/wherever `week:YYYY-WW` entries are written).
+- These soak numbers are per-furrow and only exist for rows the crew actually tapped in Tail Watch — rows never marked don't appear in the "Soak Time by Furrow" list.
+
 ## Authentication & permissions
 
 The app requires sign-in (Supabase Auth, email/password). All data stays shared across everyone who's approved — auth/approval is a login gate, not per-user data partitioning.

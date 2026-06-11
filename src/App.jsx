@@ -1766,8 +1766,11 @@ function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, afiMode, o
 function SetLogDetails({ set, status }) {
   const setRows = getSetRowNumbers(set);
   const hasAdvances = status.rowAdvances && Object.keys(status.rowAdvances).length > 0;
-  const stats = hasAdvances ? computeAdvanceStats(status.rowAdvances, status.startedAt, setRows) : null;
-  const tailSoakMs = stats && status.completedAt != null ? status.completedAt - (status.startedAt + stats.maxMs) : null;
+  const stats = hasAdvances ? computeAdvanceStats(status.rowAdvances, status.startedAt, setRows, status.completedAt) : null;
+  const avgSoakMs = stats && stats.count > 0
+    ? stats.advances.reduce((sum, a) => sum + a.soakMs, 0) / stats.count
+    : null;
+  const minSoakMs = stats && stats.count > 0 ? Math.min(...stats.advances.map(a => a.soakMs)) : null;
 
   return (
     <div className="rounded-xl p-3" style={{ background: '#0B0F08' }}>
@@ -1797,7 +1800,20 @@ function SetLogDetails({ set, status }) {
             <div>Avg advance: <span className="font-mono-time" style={{ color: '#F5F7F0' }}>{formatMinSec(stats.avgMs)}</span></div>
             <div>Fastest: <span className="font-mono-time" style={{ color: '#A3E635' }}>Row {stats.advances.find(a => a.elapsed === stats.minMs)?.row} · {formatMinSec(stats.minMs)}</span></div>
             <div>Slowest: <span className="font-mono-time" style={{ color: '#F59E0B' }}>Row {stats.advances.find(a => a.elapsed === stats.maxMs)?.row} · {formatMinSec(stats.maxMs)}</span></div>
-            <div className="col-span-2">Min tail soak: <span className="font-mono-time" style={{ color: '#A3E635' }}>{formatMinSec(tailSoakMs)}</span></div>
+            <div>Avg soak: <span className="font-mono-time" style={{ color: '#A3E635' }}>{formatMinSec(avgSoakMs)}</span></div>
+            <div>Min soak: <span className="font-mono-time" style={{ color: '#F59E0B' }}>{formatMinSec(minSoakMs)}</span></div>
+          </div>
+
+          <div className="text-[10px] uppercase tracking-wider mt-3 mb-2" style={{ color: '#FACC15' }}>
+            Soak Time by Furrow
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+            {stats.advances.map(a => (
+              <div key={a.row} className="flex justify-between">
+                <span style={{ color: '#8C9683' }}>Row {a.row}</span>
+                <span className="font-mono-time" style={{ color: '#F5F7F0' }}>{formatMinSec(a.soakMs)}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -3896,9 +3912,18 @@ function getSetRowNumbers(set) {
   return rows;
 }
 
-function computeAdvanceStats(rowAdvances, startedAt, setRows) {
+// `endTime`, when given, is the moment to measure soak time against: how long
+// each furrow has continued receiving water since it reached the tail end.
+// Pass `Date.now()` for a live in-progress set, or `completedAt` once the set
+// has been shut off. Omit it where soak time isn't needed.
+function computeAdvanceStats(rowAdvances, startedAt, setRows, endTime) {
   const advances = Object.entries(rowAdvances || {})
-    .map(([row, ts]) => ({ row: parseInt(row), ts, elapsed: ts - startedAt }))
+    .map(([row, ts]) => ({
+      row: parseInt(row),
+      ts,
+      elapsed: ts - startedAt,
+      soakMs: endTime != null ? Math.max(0, endTime - ts) : null
+    }))
     .sort((a, b) => a.ts - b.ts);
   const total = setRows.length;
   const count = advances.length;
@@ -3973,7 +3998,6 @@ function TailWatchSummary({ activeSet, config, onOpen }) {
 function TailWatchModal({ config, activeSet, onMarkRowAdvanced, onClose }) {
   const setDef = config.sets.find(s => s.id === activeSet.setId);
   const setRows = getSetRowNumbers(setDef);
-  const stats = computeAdvanceStats(activeSet.rowAdvances, activeSet.startedAt, setRows);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -3981,7 +4005,9 @@ function TailWatchModal({ config, activeSet, onMarkRowAdvanced, onClose }) {
     return () => clearInterval(i);
   }, []);
 
-  const elapsed = Date.now() - activeSet.startedAt;
+  const now = Date.now();
+  const stats = computeAdvanceStats(activeSet.rowAdvances, activeSet.startedAt, setRows, now);
+  const elapsed = now - activeSet.startedAt;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#0B0F08' }}>
@@ -4021,7 +4047,7 @@ function TailWatchModal({ config, activeSet, onMarkRowAdvanced, onClose }) {
         <div className="rounded-lg p-2 text-center" style={{ background: '#0B0F08' }}>
           <div className="text-[9px] uppercase tracking-wider" style={{ color: '#8C9683' }}>Soak (1st)</div>
           <div className="font-mono-time text-lg font-bold" style={{ color: '#A3E635' }}>
-            {stats.first ? formatMinSec(elapsed - stats.first.elapsed) : '—'}
+            {stats.first ? formatMinSec(stats.first.soakMs) : '—'}
           </div>
         </div>
       </div>
@@ -4060,6 +4086,25 @@ function TailWatchModal({ config, activeSet, onMarkRowAdvanced, onClose }) {
             );
           })}
         </div>
+
+        {stats.count > 0 && (
+          <div className="mt-6 rounded-xl p-3" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+            <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: '#FACC15' }}>
+              Soak Times
+            </div>
+            <div className="text-xs mb-2" style={{ color: '#8C9683' }}>
+              How long each furrow has been soaking since water reached the tail end.
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+              {[...stats.advances].sort((a, b) => a.row - b.row).map(a => (
+                <div key={a.row} className="flex justify-between">
+                  <span style={{ color: '#8C9683' }}>Row {a.row}</span>
+                  <span className="font-mono-time" style={{ color: '#A3E635' }}>{formatMinSec(a.soakMs)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {stats.count >= 2 && (
           <div className="mt-6 rounded-xl p-3" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
