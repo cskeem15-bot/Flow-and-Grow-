@@ -472,6 +472,7 @@ export default function App() {
   }
 
   async function saveConfig(newConfig) {
+    recordWrite();
     setConfig(newConfig);
     await setValue('config', newConfig);
   }
