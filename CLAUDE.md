@@ -87,6 +87,10 @@ While a set is running, the "Tail Watch" card on the Now tab opens `TailWatchMod
 - `SetLogDetails` (the expandable history row, shown once a set is completed) passes `status.completedAt` as `endTime`, so "Avg soak" / "Min soak" and the "Soak Time by Furrow" list reflect how long each furrow soaked between its tail-water arrival and when the set was shut off. `rowAdvances` is carried into `status` when a set completes (see `completeSet()`/wherever `week:YYYY-WW` entries are written).
 - These soak numbers are per-furrow and only exist for rows the crew actually tapped in Tail Watch — rows never marked don't appear in the "Soak Time by Furrow" list.
 
+### Adjusting a running set's duration
+
+`activeSet.plannedHours` is set when a set is started (from the "Planned hours" stepper on `NextSetCard`, 1h steps, 1-24h) but isn't fixed after that — `ActiveSetCard` shows a `−`/`+` stepper (0.5h steps, 0.5-24h) next to "of Xh · ends ..." so the crew can extend (or shorten) a set that's already running, e.g. if water is moving slower than expected and it needs to run past its planned hours. `adjustActiveSetHours(newHours)` in `App()` writes the new value to `activeSet.plannedHours` and persists it to the `active` storage key; the elapsed/remaining time, "ends at" time, and progress bar all recompute from it immediately. The `notify` Edge Function's `checkTimerDone()` reads `active.plannedHours` directly, so an extension made before the original timer fires pushes the "timer done" notification back automatically.
+
 ## Authentication & permissions
 
 The app requires sign-in (Supabase Auth, email/password). All data stays shared across everyone who's approved — auth/approval is a login gate, not per-user data partitioning.

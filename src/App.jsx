@@ -717,6 +717,17 @@ export default function App() {
     await setValue('active', newActive);
   }
 
+  // Lets the crew extend (or shorten) the planned duration of a set that's
+  // already running -- e.g. water is moving slower than expected and needs
+  // to run past the originally planned hours.
+  async function adjustActiveSetHours(newHours) {
+    if (!activeSet) return;
+    recordWrite();
+    const newActive = { ...activeSet, plannedHours: newHours };
+    setActiveSet(newActive);
+    await setValue('active', newActive);
+  }
+
   async function completeSet(notes, crewMember) {
     if (!activeSet) return;
     recordWrite();
@@ -934,6 +945,7 @@ export default function App() {
             onCancel={cancelActive}
             onAddTodayEntry={addTodayEntry}
             onMarkRowAdvanced={markRowAdvanced}
+            onAdjustHours={adjustActiveSetHours}
             onSetAfiOverride={setAfiOverride}
             onSetPostponed={setPostponedUntil}
             tick={tick}
@@ -1005,7 +1017,7 @@ function Header({ config, weekKey }) {
   );
 }
 
-function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onSetAfiOverride, onSetPostponed, tick, setView }) {
+function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onAdjustHours, onSetAfiOverride, onSetPostponed, tick, setView }) {
   const [showComplete, setShowComplete] = useState(false);
   const [showStart, setShowStart] = useState(null);
   const [showTailWatch, setShowTailWatch] = useState(false);
@@ -1048,6 +1060,7 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
           setCrewMember={setCrewMember}
           onComplete={onComplete}
           onCancel={onCancel}
+          onAdjustHours={onAdjustHours}
           onOpenTailWatch={() => setShowTailWatch(true)}
         />
       ) : !nextSet ? (
@@ -1179,7 +1192,7 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
   );
 }
 
-function ActiveSetCard({ config, activeSet, showComplete, setShowComplete, notes, setNotes, crewMember, setCrewMember, onComplete, onCancel, onOpenTailWatch }) {
+function ActiveSetCard({ config, activeSet, showComplete, setShowComplete, notes, setNotes, crewMember, setCrewMember, onComplete, onCancel, onAdjustHours, onOpenTailWatch }) {
   const setDef = config.sets.find(s => s.id === activeSet.setId);
   const elapsed = Date.now() - activeSet.startedAt;
   const plannedMs = activeSet.plannedHours * 3600000;
@@ -1214,8 +1227,20 @@ function ActiveSetCard({ config, activeSet, showComplete, setShowComplete, notes
         <div className="font-mono-time text-6xl font-bold" style={{ color: overrun ? '#F59E0B' : '#F5F7F0' }}>
           {formatDuration(overrun ? -remaining : elapsed)}
         </div>
-        <div className="text-sm mt-2" style={{ color: '#8C9683' }}>
-          of {activeSet.plannedHours}h · ends {formatTimeShort(endTime)}
+        <div className="flex items-center justify-center gap-2 mt-2 text-sm" style={{ color: '#8C9683' }}>
+          <span>of</span>
+          <button
+            onClick={() => onAdjustHours(Math.max(0.5, activeSet.plannedHours - 0.5))}
+            className="w-7 h-7 rounded-lg flex items-center justify-center active:scale-95 transition-transform"
+            style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+          >−</button>
+          <span className="font-mono-time" style={{ color: '#F5F7F0' }}>{activeSet.plannedHours}h</span>
+          <button
+            onClick={() => onAdjustHours(Math.min(24, activeSet.plannedHours + 0.5))}
+            className="w-7 h-7 rounded-lg flex items-center justify-center active:scale-95 transition-transform"
+            style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+          >+</button>
+          <span>· ends {formatTimeShort(endTime)}</span>
         </div>
       </div>
 
