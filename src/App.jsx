@@ -909,6 +909,8 @@ export default function App() {
     );
   }
 
+  const isAdmin = !!userStatus?.is_admin;
+
   return (
     <div className="min-h-screen" style={{
       background: '#0B0F08',
@@ -931,7 +933,6 @@ export default function App() {
 
       <div className="pb-24 px-4 max-w-2xl mx-auto">
        <ErrorBoundary key={view}>
-        {(() => { const isAdmin = !!userStatus?.is_admin; return (<>
         {view === 'now' && (
           <NowView
             config={config}
@@ -989,7 +990,6 @@ export default function App() {
         {view === 'schedule' && (
           <ScheduleView config={config} schedule={schedule} setView={setView} isAdmin={isAdmin} />
         )}
-        </>); })()}
        </ErrorBoundary>
       </div>
 
@@ -2373,47 +2373,73 @@ function SetupView({ config, onSave, userEmail, userStatus, onSignOut }) {
 
   return (
     <div className="space-y-4">
+      {!isAdmin && (
+        <div className="rounded-xl p-3 text-sm text-center" style={{ background: '#151A11', border: '1px solid #2A3525', color: '#8C9683' }}>
+          Contact your admin to change field settings.
+        </div>
+      )}
       <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
         <div className="text-xs uppercase tracking-[0.2em] mb-3" style={{ color: '#8C9683' }}>Field</div>
-        <input
-          value={local.fieldName}
-          onChange={(e) => setLocal({ ...local, fieldName: e.target.value })}
-          className="w-full p-3 rounded-xl mb-3 font-display text-xl"
-          style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
-        />
-        <div className="grid grid-cols-2 gap-3 mb-3">
-          <div>
-            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Total Rows</label>
-            <input
-              type="number"
-              value={local.totalRows}
-              onChange={(e) => setLocal({ ...local, totalRows: parseInt(e.target.value) || 0 })}
-              className="w-full p-3 rounded-xl font-mono-time"
-              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
-            />
+        {isAdmin ? (
+          <input
+            value={local.fieldName}
+            onChange={(e) => setLocal({ ...local, fieldName: e.target.value })}
+            className="w-full p-3 rounded-xl mb-3 font-display text-xl"
+            style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+          />
+        ) : (
+          <div className="font-display text-2xl mb-3" style={{ color: '#F5F7F0' }}>{local.fieldName}</div>
+        )}
+        {isAdmin ? (
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Total Rows</label>
+              <input
+                type="number"
+                value={local.totalRows}
+                onChange={(e) => setLocal({ ...local, totalRows: parseInt(e.target.value) || 0 })}
+                className="w-full p-3 rounded-xl font-mono-time"
+                style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Furrow Length (ft)</label>
+              <input
+                type="number"
+                value={local.furrowLength}
+                onChange={(e) => setLocal({ ...local, furrowLength: parseInt(e.target.value) || 0 })}
+                className="w-full p-3 rounded-xl font-mono-time"
+                style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+              />
+            </div>
           </div>
-          <div>
-            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Furrow Length (ft)</label>
-            <input
-              type="number"
-              value={local.furrowLength}
-              onChange={(e) => setLocal({ ...local, furrowLength: parseInt(e.target.value) || 0 })}
-              className="w-full p-3 rounded-xl font-mono-time"
-              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
-            />
+        ) : (
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <div className="text-xs uppercase tracking-wider mb-1" style={{ color: '#8C9683' }}>Total Rows</div>
+              <div className="font-mono-time p-3" style={{ color: '#F5F7F0' }}>{local.totalRows}</div>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-wider mb-1" style={{ color: '#8C9683' }}>Furrow Length (ft)</div>
+              <div className="font-mono-time p-3" style={{ color: '#F5F7F0' }}>{local.furrowLength} ft</div>
+            </div>
           </div>
-        </div>
+        )}
         <div>
           <label className="text-xs uppercase tracking-wider block mb-1 flex items-center gap-1" style={{ color: '#FACC15' }}>
             <Sprout className="w-3 h-3" /> Planting Date
           </label>
-          <input
-            type="date"
-            value={local.plantingDate || ''}
-            onChange={(e) => setLocal({ ...local, plantingDate: e.target.value || null })}
-            className="w-full p-3 rounded-xl font-mono-time"
-            style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
-          />
+          {isAdmin ? (
+            <input
+              type="date"
+              value={local.plantingDate || ''}
+              onChange={(e) => setLocal({ ...local, plantingDate: e.target.value || null })}
+              className="w-full p-3 rounded-xl font-mono-time"
+              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+            />
+          ) : (
+            <div className="font-mono-time p-3" style={{ color: '#F5F7F0' }}>{local.plantingDate || 'Not set'}</div>
+          )}
           <div className="text-xs mt-1" style={{ color: '#8C9683' }}>
             Unlocks stage-based scheduling on the Plan tab
           </div>
@@ -2421,19 +2447,23 @@ function SetupView({ config, onSave, userEmail, userStatus, onSignOut }) {
         <div className="mt-3">
           <div className="flex items-center justify-between">
             <label className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>Days Between Rotations</label>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setLocal({ ...local, cycleDays: Math.max(1, (local.cycleDays || 7) - 1) })}
-                className="w-8 h-8 rounded-lg"
-                style={{ background: '#0B0F08' }}
-              >−</button>
-              <span className="font-mono-time w-16 text-center">{local.cycleDays || 7}d</span>
-              <button
-                onClick={() => setLocal({ ...local, cycleDays: Math.min(21, (local.cycleDays || 7) + 1) })}
-                className="w-8 h-8 rounded-lg"
-                style={{ background: '#0B0F08' }}
-              >+</button>
-            </div>
+            {isAdmin ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setLocal({ ...local, cycleDays: Math.max(1, (local.cycleDays || 7) - 1) })}
+                  className="w-8 h-8 rounded-lg"
+                  style={{ background: '#0B0F08' }}
+                >−</button>
+                <span className="font-mono-time w-16 text-center">{local.cycleDays || 7}d</span>
+                <button
+                  onClick={() => setLocal({ ...local, cycleDays: Math.min(21, (local.cycleDays || 7) + 1) })}
+                  className="w-8 h-8 rounded-lg"
+                  style={{ background: '#0B0F08' }}
+                >+</button>
+              </div>
+            ) : (
+              <span className="font-mono-time">{local.cycleDays || 7}d</span>
+            )}
           </div>
           <div className="text-xs mt-1" style={{ color: '#8C9683' }}>
             After every section has been watered once, the rotation waits this many days (counted from when Section 1 finished) before starting over from Section 1.
@@ -2447,43 +2477,49 @@ function SetupView({ config, onSave, userEmail, userStatus, onSignOut }) {
           {local.crew.map(name => (
             <div key={name} className="flex items-center justify-between p-3 rounded-xl" style={{ background: '#0B0F08' }}>
               <span>{name}</span>
-              <button onClick={() => removeCrew(name)} style={{ color: '#8C9683' }}>
-                <X className="w-4 h-4" />
-              </button>
+              {isAdmin && (
+                <button onClick={() => removeCrew(name)} style={{ color: '#8C9683' }}>
+                  <X className="w-4 h-4" />
+                </button>
+              )}
             </div>
           ))}
         </div>
-        <div className="flex gap-2">
-          <input
-            value={crewInput}
-            onChange={(e) => setCrewInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && addCrew()}
-            placeholder="Add crew member"
-            className="flex-1 p-3 rounded-xl"
-            style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
-          />
-          <button
-            onClick={addCrew}
-            className="px-5 rounded-xl font-semibold"
-            style={{ background: '#FACC15', color: '#0B0F08' }}
-          >
-            Add
-          </button>
-        </div>
+        {isAdmin && (
+          <div className="flex gap-2">
+            <input
+              value={crewInput}
+              onChange={(e) => setCrewInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addCrew()}
+              placeholder="Add crew member"
+              className="flex-1 p-3 rounded-xl"
+              style={{ background: '#0B0F08', color: '#F5F7F0', border: '1px solid #2A3525' }}
+            />
+            <button
+              onClick={addCrew}
+              className="px-5 rounded-xl font-semibold"
+              style={{ background: '#FACC15', color: '#0B0F08' }}
+            >
+              Add
+            </button>
+          </div>
+        )}
       </div>
 
-      <WateringPatternCard local={local} setLocal={setLocal} />
+      <WateringPatternCard local={local} setLocal={setLocal} isAdmin={isAdmin} />
 
       <div className="rounded-2xl p-5" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
         <div className="flex items-center justify-between mb-3">
           <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>Field Sections</div>
-          <button
-            onClick={addSection}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold active:scale-95 transition-transform"
-            style={{ background: '#FACC15', color: '#0B0F08' }}
-          >
-            <Plus className="w-3 h-3" /> Add Section
-          </button>
+          {isAdmin && (
+            <button
+              onClick={addSection}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold active:scale-95 transition-transform"
+              style={{ background: '#FACC15', color: '#0B0F08' }}
+            >
+              <Plus className="w-3 h-3" /> Add Section
+            </button>
+          )}
         </div>
         <div className="text-xs mb-3" style={{ color: '#8C9683' }}>
           Set each section's rows, gates, hours, and watering frequency. Use the arrows to match irrigation order.
@@ -2499,6 +2535,7 @@ function SetupView({ config, onSave, userEmail, userStatus, onSignOut }) {
               onMoveUp={() => moveSet(set.id, -1)}
               onMoveDown={() => moveSet(set.id, 1)}
               onRemove={() => removeSet(set.id)}
+              isAdmin={isAdmin}
             />
           ))}
         </div>
@@ -2510,13 +2547,15 @@ function SetupView({ config, onSave, userEmail, userStatus, onSignOut }) {
 
       <AccountCard userEmail={userEmail} isAdmin={!!userStatus?.is_admin} onSignOut={onSignOut} />
 
-      <button
-        onClick={save}
-        className="w-full py-4 rounded-xl font-bold text-lg glow-amber active:scale-95 transition-transform"
-        style={{ background: '#FACC15', color: '#0B0F08' }}
-      >
-        Save Changes
-      </button>
+      {isAdmin && (
+        <button
+          onClick={save}
+          className="w-full py-4 rounded-xl font-bold text-lg glow-amber active:scale-95 transition-transform"
+          style={{ background: '#FACC15', color: '#0B0F08' }}
+        >
+          Save Changes
+        </button>
+      )}
     </div>
   );
 }
@@ -2765,7 +2804,7 @@ function PendingRequestsCard({ currentUserId }) {
 // Lets the user switch every active section onto the field-wide "Auto"
 // AFI schedule (every row the planting week, then alternating evens/odds
 // each week after) in one tap, instead of editing each section by hand.
-function WateringPatternCard({ local, setLocal }) {
+function WateringPatternCard({ local, setLocal, isAdmin }) {
   const activeSets = local.sets.filter(s => s.active !== false);
   const autoCount = activeSets.filter(s => (s.afiMode || 'every') === 'auto').length;
   const allAuto = activeSets.length > 0 && autoCount === activeSets.length;
@@ -2788,7 +2827,7 @@ function WateringPatternCard({ local, setLocal }) {
         <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: '#A3E635' }}>
           <CheckCircle className="w-4 h-4" /> All sections on Auto
         </div>
-      ) : (
+      ) : isAdmin ? (
         <button
           onClick={applyAutoToAll}
           className="w-full py-3 rounded-xl text-sm font-semibold active:scale-95 transition-transform"
@@ -2796,12 +2835,16 @@ function WateringPatternCard({ local, setLocal }) {
         >
           Switch all sections to Auto ({autoCount}/{activeSets.length} currently)
         </button>
+      ) : (
+        <div className="text-sm" style={{ color: '#8C9683' }}>
+          {autoCount}/{activeSets.length} sections on Auto
+        </div>
       )}
     </div>
   );
 }
 
-function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown, onRemove }) {
+function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown, onRemove, isAdmin }) {
   const [expanded, setExpanded] = useState(false);
   const parts = (set.rows || '').split(/[–\-]/).map(s => parseInt(s.trim()));
   const startRow = isNaN(parts[0]) ? '' : parts[0];
@@ -2819,31 +2862,37 @@ function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown
   return (
     <div className="rounded-xl overflow-hidden" style={{ background: '#0B0F08', border: '1px solid #2A3525' }}>
       <div className="flex items-center gap-2 p-3">
-        <div className="flex flex-col gap-1 flex-shrink-0">
-          <button
-            onClick={onMoveUp}
-            disabled={isFirst}
-            className="w-7 h-7 rounded-lg flex items-center justify-center"
-            style={{ background: '#151A11', color: isFirst ? '#2A3525' : '#8C9683' }}
-          >
-            <ChevronUp className="w-4 h-4" />
-          </button>
-          <button
-            onClick={onMoveDown}
-            disabled={isLast}
-            className="w-7 h-7 rounded-lg flex items-center justify-center"
-            style={{ background: '#151A11', color: isLast ? '#2A3525' : '#8C9683' }}
-          >
-            <ChevronDown className="w-4 h-4" />
-          </button>
-        </div>
+        {isAdmin && (
+          <div className="flex flex-col gap-1 flex-shrink-0">
+            <button
+              onClick={onMoveUp}
+              disabled={isFirst}
+              className="w-7 h-7 rounded-lg flex items-center justify-center"
+              style={{ background: '#151A11', color: isFirst ? '#2A3525' : '#8C9683' }}
+            >
+              <ChevronUp className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onMoveDown}
+              disabled={isLast}
+              className="w-7 h-7 rounded-lg flex items-center justify-center"
+              style={{ background: '#151A11', color: isLast ? '#2A3525' : '#8C9683' }}
+            >
+              <ChevronDown className="w-4 h-4" />
+            </button>
+          </div>
+        )}
         <div className="flex-1 min-w-0">
-          <input
-            value={set.label}
-            onChange={(e) => onUpdate('label', e.target.value)}
-            className="w-full bg-transparent font-semibold mb-0.5"
-            style={{ color: '#F5F7F0' }}
-          />
+          {isAdmin ? (
+            <input
+              value={set.label}
+              onChange={(e) => onUpdate('label', e.target.value)}
+              className="w-full bg-transparent font-semibold mb-0.5"
+              style={{ color: '#F5F7F0' }}
+            />
+          ) : (
+            <div className="font-semibold mb-0.5" style={{ color: '#F5F7F0' }}>{set.label}</div>
+          )}
           <div className="text-xs truncate" style={{ color: '#8C9683' }}>
             Rows {set.rows} · {set.gates} gates · {set.hours}h{!isActive ? ' · inactive' : ''}
           </div>
@@ -2859,97 +2908,107 @@ function SectionEditorRow({ set, isFirst, isLast, onUpdate, onMoveUp, onMoveDown
 
       {expanded && (
         <div className="px-3 pb-3 pt-3 space-y-3" style={{ borderTop: '1px solid #2A3525' }}>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Start Row</label>
-              <input
-                type="number"
-                value={startRow}
-                onChange={(e) => updateRange('start', e.target.value)}
-                className="w-full p-2 rounded-lg font-mono-time"
-                style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
-              />
-            </div>
-            <div>
-              <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>End Row</label>
-              <input
-                type="number"
-                value={endRow}
-                onChange={(e) => updateRange('end', e.target.value)}
-                className="w-full p-2 rounded-lg font-mono-time"
-                style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
-              />
-            </div>
-          </div>
+          {isAdmin ? (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Start Row</label>
+                  <input
+                    type="number"
+                    value={startRow}
+                    onChange={(e) => updateRange('start', e.target.value)}
+                    className="w-full p-2 rounded-lg font-mono-time"
+                    style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>End Row</label>
+                  <input
+                    type="number"
+                    value={endRow}
+                    onChange={(e) => updateRange('end', e.target.value)}
+                    className="w-full p-2 rounded-lg font-mono-time"
+                    style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
+                  />
+                </div>
+              </div>
 
-          <div>
-            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Gates</label>
-            <input
-              type="number"
-              value={set.gates}
-              onChange={(e) => onUpdate('gates', parseInt(e.target.value) || 0)}
-              className="w-full p-2 rounded-lg font-mono-time"
-              style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
-            />
-          </div>
+              <div>
+                <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Gates</label>
+                <input
+                  type="number"
+                  value={set.gates}
+                  onChange={(e) => onUpdate('gates', parseInt(e.target.value) || 0)}
+                  className="w-full p-2 rounded-lg font-mono-time"
+                  style={{ background: '#151A11', color: '#F5F7F0', border: '1px solid #2A3525' }}
+                />
+              </div>
 
-          <div className="flex items-center justify-between">
-            <label className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>Set Hours</label>
-            <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs uppercase tracking-wider" style={{ color: '#8C9683' }}>Set Hours</label>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => onUpdate('hours', Math.max(1, set.hours - 1))}
+                    className="w-8 h-8 rounded-lg"
+                    style={{ background: '#151A11' }}
+                  >−</button>
+                  <span className="font-mono-time w-10 text-center">{set.hours}h</span>
+                  <button
+                    onClick={() => onUpdate('hours', Math.min(24, set.hours + 1))}
+                    className="w-8 h-8 rounded-lg"
+                    style={{ background: '#151A11' }}
+                  >+</button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Pattern</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {AFI_MODE_OPTIONS.map(opt => (
+                    <button
+                      key={opt.id}
+                      onClick={() => onUpdate('afiMode', opt.id)}
+                      className="py-2 rounded-lg text-center"
+                      style={{
+                        background: afiMode === opt.id ? '#FACC15' : '#151A11',
+                        color: afiMode === opt.id ? '#0B0F08' : '#F5F7F0',
+                        border: '1px solid #2A3525'
+                      }}
+                    >
+                      <div className="font-semibold text-sm">{opt.label}</div>
+                      <div className="text-[10px] opacity-70">{opt.sub}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <button
-                onClick={() => onUpdate('hours', Math.max(1, set.hours - 1))}
-                className="w-8 h-8 rounded-lg"
-                style={{ background: '#151A11' }}
-              >−</button>
-              <span className="font-mono-time w-10 text-center">{set.hours}h</span>
+                onClick={() => onUpdate('active', !isActive)}
+                className="w-full py-2 rounded-lg text-sm font-semibold active:scale-95 transition-transform"
+                style={{
+                  background: isActive ? '#A3E635' : '#151A11',
+                  color: isActive ? '#0B0F08' : '#8C9683',
+                  border: '1px solid #2A3525'
+                }}
+              >
+                {isActive ? 'Active in rotation' : 'Inactive — tap to include in rotation'}
+              </button>
+
               <button
-                onClick={() => onUpdate('hours', Math.min(24, set.hours + 1))}
-                className="w-8 h-8 rounded-lg"
-                style={{ background: '#151A11' }}
-              >+</button>
+                onClick={onRemove}
+                className="w-full py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
+                style={{ background: '#151A11', color: '#8C9683', border: '1px solid #2A3525' }}
+              >
+                <Trash2 className="w-4 h-4" /> Remove Section
+              </button>
+            </>
+          ) : (
+            <div className="space-y-1 text-sm" style={{ color: '#8C9683' }}>
+              <div>Rows {set.rows} · {set.gates} gates · {set.hours}h</div>
+              <div>Pattern: {AFI_MODE_OPTIONS.find(o => o.id === afiMode)?.label || afiMode}</div>
+              <div>{isActive ? 'Active in rotation' : 'Inactive'}</div>
             </div>
-          </div>
-
-          <div>
-            <label className="text-xs uppercase tracking-wider block mb-1" style={{ color: '#8C9683' }}>Pattern</label>
-            <div className="grid grid-cols-2 gap-2">
-              {AFI_MODE_OPTIONS.map(opt => (
-                <button
-                  key={opt.id}
-                  onClick={() => onUpdate('afiMode', opt.id)}
-                  className="py-2 rounded-lg text-center"
-                  style={{
-                    background: afiMode === opt.id ? '#FACC15' : '#151A11',
-                    color: afiMode === opt.id ? '#0B0F08' : '#F5F7F0',
-                    border: '1px solid #2A3525'
-                  }}
-                >
-                  <div className="font-semibold text-sm">{opt.label}</div>
-                  <div className="text-[10px] opacity-70">{opt.sub}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <button
-            onClick={() => onUpdate('active', !isActive)}
-            className="w-full py-2 rounded-lg text-sm font-semibold active:scale-95 transition-transform"
-            style={{
-              background: isActive ? '#A3E635' : '#151A11',
-              color: isActive ? '#0B0F08' : '#8C9683',
-              border: '1px solid #2A3525'
-            }}
-          >
-            {isActive ? 'Active in rotation' : 'Inactive — tap to include in rotation'}
-          </button>
-
-          <button
-            onClick={onRemove}
-            className="w-full py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
-            style={{ background: '#151A11', color: '#8C9683', border: '1px solid #2A3525' }}
-          >
-            <Trash2 className="w-4 h-4" /> Remove Section
-          </button>
+          )}
         </div>
       )}
     </div>
@@ -3158,7 +3217,7 @@ function StageBanner({ config, setView }) {
   );
 }
 
-function ScheduleView({ config, schedule, setView }) {
+function ScheduleView({ config, schedule, setView, isAdmin }) {
   const [mode, setMode] = useState('plan');
 
   return (
@@ -3213,8 +3272,8 @@ function ScheduleView({ config, schedule, setView }) {
 
       {mode === 'plan' && <PlanView config={config} schedule={schedule} setView={setView} />}
       {mode === 'stages' && <StagesPanel config={config} setView={setView} />}
-      {mode === 'calendar' && <CalendarPanel config={config} />}
-      {mode === 'scouting' && <ScoutingPanel config={config} />}
+      {mode === 'calendar' && <CalendarPanel config={config} isAdmin={isAdmin} />}
+      {mode === 'scouting' && <ScoutingPanel config={config} isAdmin={isAdmin} />}
     </div>
   );
 }
@@ -3499,7 +3558,7 @@ function StageCard({ stage, isCurrent, isPast, dateRange, stageInfo }) {
   );
 }
 
-function CalendarPanel({ config }) {
+function CalendarPanel({ config, isAdmin }) {
   const today = new Date();
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
@@ -3675,10 +3734,11 @@ function CalendarPanel({ config }) {
           config={config}
           onAddEvent={() => setShowAddEvent(true)}
           onDeleteEvent={deleteEvent}
+          isAdmin={isAdmin}
         />
       )}
 
-      {showAddEvent && selectedDay && (
+      {isAdmin && showAddEvent && selectedDay && (
         <AddEventModal
           date={getDayKey(selectedDay.date)}
           onSave={async (data) => { await addEvent(data); setShowAddEvent(false); }}
@@ -3761,7 +3821,7 @@ function DayCell({ day, today, isSelected, sets, events, plantingDate, onSelect 
   );
 }
 
-function DayDetails({ date, sets, events, plantingDate, config, onAddEvent, onDeleteEvent }) {
+function DayDetails({ date, sets, events, plantingDate, config, onAddEvent, onDeleteEvent, isAdmin }) {
   const dateLabel = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const stageInfo = getStageForDate(date, plantingDate);
   const isPlantingDay = plantingDate && getDayKey(date) === plantingDate;
@@ -3777,13 +3837,15 @@ function DayDetails({ date, sets, events, plantingDate, config, onAddEvent, onDe
           </div>
           <div className="font-display text-lg">{dateLabel}</div>
         </div>
-        <button
-          onClick={onAddEvent}
-          className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1"
-          style={{ background: '#FACC15', color: '#0B0F08' }}
-        >
-          <Plus className="w-3 h-3" /> Event
-        </button>
+        {isAdmin && (
+          <button
+            onClick={onAddEvent}
+            className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1"
+            style={{ background: '#FACC15', color: '#0B0F08' }}
+          >
+            <Plus className="w-3 h-3" /> Event
+          </button>
+        )}
       </div>
 
       {/* Planting day callout */}
@@ -3871,13 +3933,15 @@ function DayDetails({ date, sets, events, plantingDate, config, onAddEvent, onDe
                   {ev.time && <div className="text-xs" style={{ color: '#FACC15' }}>{ev.time}</div>}
                   {ev.notes && <div className="text-xs mt-1" style={{ color: '#8C9683' }}>{ev.notes}</div>}
                 </div>
-                <button
-                  onClick={() => onDeleteEvent(ev.id)}
-                  className="p-1"
-                  style={{ color: '#8C9683' }}
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => onDeleteEvent(ev.id)}
+                    className="p-1"
+                    style={{ color: '#8C9683' }}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -3886,7 +3950,7 @@ function DayDetails({ date, sets, events, plantingDate, config, onAddEvent, onDe
 
       {sets.length === 0 && events.length === 0 && !stageInfo && !isPlantingDay && (
         <div className="text-center py-4 text-sm" style={{ color: '#8C9683' }}>
-          Nothing scheduled. Tap "Event" to add one.
+          {isAdmin ? 'Nothing scheduled. Tap "Event" to add one.' : 'Nothing scheduled for this day.'}
         </div>
       )}
     </div>
@@ -4247,7 +4311,7 @@ const CORN_STAGES = [
 
 const POINT_COLORS = ['#A3E635', '#FACC15', '#60A5FA', '#F472B6', '#C084FC', '#FB923C', '#22D3EE', '#FB7185', '#A78BFA', '#34D399', '#FBBF24', '#F87171'];
 
-function ScoutingPanel({ config }) {
+function ScoutingPanel({ config, isAdmin }) {
   const [points, setPoints] = useState([]);
   const [measurements, setMeasurements] = useState([]);
   const [photos, setPhotos] = useState({});
@@ -4370,13 +4434,15 @@ function ScoutingPanel({ config }) {
             {points.length} {points.length === 1 ? 'point' : 'points'} · {measurements.length} measurements
           </div>
         </div>
-        <button
-          onClick={() => setShowAddPoint(true)}
-          className="px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-1"
-          style={{ background: '#FACC15', color: '#0B0F08' }}
-        >
-          <Plus className="w-4 h-4" /> Point
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setShowAddPoint(true)}
+            className="px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-1"
+            style={{ background: '#FACC15', color: '#0B0F08' }}
+          >
+            <Plus className="w-4 h-4" /> Point
+          </button>
+        )}
       </div>
 
       {/* Chart */}
@@ -4386,20 +4452,28 @@ function ScoutingPanel({ config }) {
 
       {/* Points list */}
       {points.length === 0 ? (
-        <div className="rounded-2xl p-8 text-center" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
-          <TrendingUp className="w-12 h-12 mx-auto mb-3" style={{ color: '#FACC15' }} />
-          <div className="font-display text-2xl mb-2">Add Your First Point</div>
-          <div className="text-sm mb-5" style={{ color: '#8C9683' }}>
-            Flag spots across your field — head/middle/tail, or by zone — and measure them each week to track growth.
+        isAdmin ? (
+          <div className="rounded-2xl p-8 text-center" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+            <TrendingUp className="w-12 h-12 mx-auto mb-3" style={{ color: '#FACC15' }} />
+            <div className="font-display text-2xl mb-2">Add Your First Point</div>
+            <div className="text-sm mb-5" style={{ color: '#8C9683' }}>
+              Flag spots across your field — head/middle/tail, or by zone — and measure them each week to track growth.
+            </div>
+            <button
+              onClick={() => setShowAddPoint(true)}
+              className="px-6 py-3 rounded-xl font-bold"
+              style={{ background: '#FACC15', color: '#0B0F08' }}
+            >
+              + Add Monitoring Point
+            </button>
           </div>
-          <button
-            onClick={() => setShowAddPoint(true)}
-            className="px-6 py-3 rounded-xl font-bold"
-            style={{ background: '#FACC15', color: '#0B0F08' }}
-          >
-            + Add Monitoring Point
-          </button>
-        </div>
+        ) : (
+          <div className="rounded-2xl p-8 text-center" style={{ background: '#151A11', border: '1px solid #2A3525' }}>
+            <TrendingUp className="w-12 h-12 mx-auto mb-3" style={{ color: '#8C9683' }} />
+            <div className="font-display text-2xl mb-2">No Scouting Points</div>
+            <div className="text-sm" style={{ color: '#8C9683' }}>No monitoring points have been set up yet.</div>
+          </div>
+        )
       ) : (
         <div className="space-y-2">
           {points.map(p => {
@@ -4420,7 +4494,7 @@ function ScoutingPanel({ config }) {
       )}
 
       {/* Modals */}
-      {showAddPoint && (
+      {isAdmin && showAddPoint && (
         <AddPointModal
           onSave={addPoint}
           onCancel={() => setShowAddPoint(false)}
@@ -4447,6 +4521,7 @@ function ScoutingPanel({ config }) {
           onDelete={() => { deletePoint(viewingPoint.id); setViewingPoint(null); }}
           onMeasure={() => { setAddMeasurementForPoint(viewingPoint); setViewingPoint(null); }}
           onDeleteMeasurement={deleteMeasurement}
+          isAdmin={isAdmin}
         />
       )}
     </div>
@@ -4838,7 +4913,7 @@ function AddMeasurementModal({ point, config, onSave, onCancel }) {
   );
 }
 
-function PointHistoryModal({ point, measurements, photos, plantingDate, onClose, onDelete, onMeasure, onDeleteMeasurement }) {
+function PointHistoryModal({ point, measurements, photos, plantingDate, onClose, onDelete, onMeasure, onDeleteMeasurement, isAdmin }) {
   const [viewingPhoto, setViewingPhoto] = useState(null);
   const planted = plantingDate ? new Date(plantingDate) : null;
 
@@ -4905,13 +4980,15 @@ function PointHistoryModal({ point, measurements, photos, plantingDate, onClose,
                           <img src={photo.dataUrl} alt="" className="w-full h-full object-cover" />
                         </button>
                       )}
-                      <button
-                        onClick={() => onDeleteMeasurement(m.id)}
-                        className="p-1 flex-shrink-0"
-                        style={{ color: '#8C9683' }}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => onDeleteMeasurement(m.id)}
+                          className="p-1 flex-shrink-0"
+                          style={{ color: '#8C9683' }}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -4921,21 +4998,25 @@ function PointHistoryModal({ point, measurements, photos, plantingDate, onClose,
         </div>
 
         {/* Actions */}
-        <div className="p-4 flex-shrink-0 grid grid-cols-2 gap-2" style={{ borderTop: '1px solid #2A3525' }}>
-          <button
-            onClick={onMeasure}
-            className="py-3 rounded-xl font-bold"
-            style={{ background: '#FACC15', color: '#0B0F08' }}
-          >
-            + Measure Now
-          </button>
-          <button
-            onClick={onDelete}
-            className="py-3 rounded-xl font-semibold border-2 flex items-center justify-center gap-1"
-            style={{ borderColor: '#2A3525', color: '#F59E0B' }}
-          >
-            <Trash2 className="w-3 h-3" /> Delete Point
-          </button>
+        <div className="p-4 flex-shrink-0" style={{ borderTop: '1px solid #2A3525' }}>
+          <div className={isAdmin ? 'grid grid-cols-2 gap-2' : ''}>
+            <button
+              onClick={onMeasure}
+              className="py-3 rounded-xl font-bold"
+              style={{ background: '#FACC15', color: '#0B0F08' }}
+            >
+              + Measure Now
+            </button>
+            {isAdmin && (
+              <button
+                onClick={onDelete}
+                className="py-3 rounded-xl font-semibold border-2 flex items-center justify-center gap-1"
+                style={{ borderColor: '#2A3525', color: '#F59E0B' }}
+              >
+                <Trash2 className="w-3 h-3" /> Delete Point
+              </button>
+            )}
+          </div>
         </div>
 
         {viewingPhoto && (
