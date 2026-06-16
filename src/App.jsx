@@ -931,6 +931,7 @@ export default function App() {
 
       <div className="pb-24 px-4 max-w-2xl mx-auto">
        <ErrorBoundary key={view}>
+        {(() => { const isAdmin = !!userStatus?.is_admin; return (<>
         {view === 'now' && (
           <NowView
             config={config}
@@ -950,6 +951,7 @@ export default function App() {
             onSetPostponed={setPostponedUntil}
             tick={tick}
             setView={setView}
+            isAdmin={isAdmin}
           />
         )}
         {view === 'week' && (
@@ -964,6 +966,7 @@ export default function App() {
             onResetSet={resetSetStatus}
             onAddPhoto={addPhoto}
             onDeletePhoto={deletePhoto}
+            isAdmin={isAdmin}
           />
         )}
         {view === 'notes' && (
@@ -974,6 +977,7 @@ export default function App() {
             onSaveReminders={saveReminders}
             onAddEntry={addTodayEntry}
             onDeleteEntry={deleteTodayEntry}
+            isAdmin={isAdmin}
           />
         )}
         {view === 'setup' && (
@@ -983,8 +987,9 @@ export default function App() {
           <HistoryView currentWeekKey={weekKey} config={config} />
         )}
         {view === 'schedule' && (
-          <ScheduleView config={config} schedule={schedule} setView={setView} />
+          <ScheduleView config={config} schedule={schedule} setView={setView} isAdmin={isAdmin} />
         )}
+        </>); })()}
        </ErrorBoundary>
       </div>
 
@@ -1017,7 +1022,7 @@ function Header({ config, weekKey }) {
   );
 }
 
-function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onAdjustHours, onSetAfiOverride, onSetPostponed, tick, setView }) {
+function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onAdjustHours, onSetAfiOverride, onSetPostponed, tick, setView, isAdmin }) {
   const [showComplete, setShowComplete] = useState(false);
   const [showStart, setShowStart] = useState(null);
   const [showTailWatch, setShowTailWatch] = useState(false);
@@ -1046,7 +1051,7 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
     <div className="space-y-4">
       <StageBanner config={config} setView={setView} />
 
-      <WeekPatternCard config={config} schedule={schedule} weekKey={weekKey} onSetOverride={onSetAfiOverride} />
+      <WeekPatternCard config={config} schedule={schedule} weekKey={weekKey} onSetOverride={onSetAfiOverride} isAdmin={isAdmin} />
 
       {activeSet ? (
         <ActiveSetCard
@@ -1089,7 +1094,7 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
         />
       )}
 
-      {!activeSet && nextSet && (
+      {!activeSet && nextSet && isAdmin && (
         <PostponeCard schedule={schedule} onSetPostponed={onSetPostponed} />
       )}
 
@@ -1568,7 +1573,7 @@ function PostponeCard({ schedule, onSetPostponed }) {
 
 // Shows the field-wide AFI pattern that "Auto" sections will run this
 // calendar week, and lets the crew override it for just this week.
-function WeekPatternCard({ config, schedule, weekKey, onSetOverride }) {
+function WeekPatternCard({ config, schedule, weekKey, onSetOverride, isAdmin }) {
   const autoSets = config.sets.filter(s => s.active !== false && (s.afiMode || 'every') === 'auto');
   if (autoSets.length === 0) return null;
 
@@ -1582,7 +1587,7 @@ function WeekPatternCard({ config, schedule, weekKey, onSetOverride }) {
         <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>
           This Week's Pattern
         </div>
-        {override && (
+        {override && isAdmin && (
           <button onClick={() => onSetOverride(weekKey, null)} className="text-xs font-semibold" style={{ color: '#F59E0B' }}>
             Reset to auto
           </button>
@@ -1596,26 +1601,28 @@ function WeekPatternCard({ config, schedule, weekKey, onSetOverride }) {
           ? `Manually set for this week · auto would be ${AFI_MODE_OPTIONS.find(o => o.id === computed)?.label.toLowerCase()}`
           : `Auto-calculated from your planting date · applies to ${autoSets.length} section${autoSets.length === 1 ? '' : 's'}`}
       </div>
-      <div className="grid grid-cols-3 gap-2">
-        {['every', 'evens', 'odds'].map(id => {
-          const opt = AFI_MODE_OPTIONS.find(o => o.id === id);
-          const isSelected = effective === id;
-          return (
-            <button
-              key={id}
-              onClick={() => onSetOverride(weekKey, id === computed ? null : id)}
-              className="py-2 rounded-lg text-center text-sm font-semibold"
-              style={{
-                background: isSelected ? '#FACC15' : '#0B0F08',
-                color: isSelected ? '#0B0F08' : '#F5F7F0',
-                border: '1px solid #2A3525'
-              }}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
-      </div>
+      {isAdmin && (
+        <div className="grid grid-cols-3 gap-2">
+          {['every', 'evens', 'odds'].map(id => {
+            const opt = AFI_MODE_OPTIONS.find(o => o.id === id);
+            const isSelected = effective === id;
+            return (
+              <button
+                key={id}
+                onClick={() => onSetOverride(weekKey, id === computed ? null : id)}
+                className="py-2 rounded-lg text-center text-sm font-semibold"
+                style={{
+                  background: isSelected ? '#FACC15' : '#0B0F08',
+                  color: isSelected ? '#0B0F08' : '#F5F7F0',
+                  border: '1px solid #2A3525'
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1642,7 +1649,7 @@ function WeekProgress({ setsDone, totalSets }) {
   );
 }
 
-function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, weekKey, onStart, onResetSet, onAddPhoto, onDeletePhoto }) {
+function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, weekKey, onStart, onResetSet, onAddPhoto, onDeletePhoto, isAdmin }) {
   const setsDone = Object.values(currentWeek.sets).filter(s => s.status === 'done').length;
   const [photoSetId, setPhotoSetId] = useState(null);
   const sortedSets = [...config.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -1676,6 +1683,7 @@ function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, 
               onReset={() => onResetSet(set.id)}
               onOpenPhotos={() => setPhotoSetId(set.id)}
               canStart={!activeSet && !isDone}
+              isAdmin={isAdmin}
             />
           );
         })}
@@ -1689,13 +1697,14 @@ function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, 
           onClose={() => setPhotoSetId(null)}
           onAddPhoto={onAddPhoto}
           onDeletePhoto={onDeletePhoto}
+          isAdmin={isAdmin}
         />
       )}
     </div>
   );
 }
 
-function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, afiMode, onStart, onReset, onOpenPhotos, canStart }) {
+function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, afiMode, onStart, onReset, onOpenPhotos, canStart, isAdmin }) {
   const [expanded, setExpanded] = useState(false);
   const afiLabel = AFI_MODE_OPTIONS.find(o => o.id === (afiMode || 'every'))?.label || 'Every';
 
@@ -1772,13 +1781,15 @@ function SetRow({ set, status, dueInfo, isActive, isDone, photoCount, afiMode, o
       {expanded && isDone && status && (
         <div className="px-4 pb-4 pt-1 text-sm" style={{ color: '#8C9683' }}>
           <SetLogDetails set={set} status={status} />
-          <button
-            onClick={onReset}
-            className="mt-3 text-xs flex items-center gap-1"
-            style={{ color: '#F59E0B' }}
-          >
-            <RotateCcw className="w-3 h-3" /> Reset this set
-          </button>
+          {isAdmin && (
+            <button
+              onClick={onReset}
+              className="mt-3 text-xs flex items-center gap-1"
+              style={{ color: '#F59E0B' }}
+            >
+              <RotateCcw className="w-3 h-3" /> Reset this set
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -1846,7 +1857,7 @@ function SetLogDetails({ set, status }) {
   );
 }
 
-function PhotosModal({ setId, weekKey, config, onClose, onAddPhoto, onDeletePhoto }) {
+function PhotosModal({ setId, weekKey, config, onClose, onAddPhoto, onDeletePhoto, isAdmin }) {
   const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -1982,13 +1993,15 @@ function PhotosModal({ setId, weekKey, config, onClose, onAddPhoto, onDeletePhot
                       <span>{p.takenBy}</span>
                       <span>{formatRelative(p.takenAt)}</span>
                     </div>
-                    <button
-                      onClick={() => handleDelete(p.id)}
-                      className="text-xs mt-2 flex items-center gap-1"
-                      style={{ color: '#F59E0B' }}
-                    >
-                      <Trash2 className="w-3 h-3" /> Delete
-                    </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleDelete(p.id)}
+                        className="text-xs mt-2 flex items-center gap-1"
+                        style={{ color: '#F59E0B' }}
+                      >
+                        <Trash2 className="w-3 h-3" /> Delete
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -2037,7 +2050,7 @@ function PhotosModal({ setId, weekKey, config, onClose, onAddPhoto, onDeletePhot
   );
 }
 
-function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, onDeleteEntry }) {
+function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, onDeleteEntry, isAdmin }) {
   const [tab, setTab] = useState('reminders');
   const [newText, setNewText] = useState('');
   const [newAuthor, setNewAuthor] = useState(config.crew[0] || '');
@@ -2112,13 +2125,15 @@ function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, 
             <div className="text-xs uppercase tracking-[0.2em]" style={{ color: '#8C9683' }}>
               Crew Reminders
             </div>
-            <button
-              onClick={() => setAddingReminder(true)}
-              className="text-xs flex items-center gap-1"
-              style={{ color: '#FACC15' }}
-            >
-              <Plus className="w-3 h-3" /> Add
-            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setAddingReminder(true)}
+                className="text-xs flex items-center gap-1"
+                style={{ color: '#FACC15' }}
+              >
+                <Plus className="w-3 h-3" /> Add
+              </button>
+            )}
           </div>
           {reminders.length === 0 && !addingReminder ? (
             <div className="p-8 text-center" style={{ color: '#8C9683' }}>
@@ -2128,17 +2143,30 @@ function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, 
           ) : (
             reminders.map(r => (
               <div key={r.id} className="p-4 flex items-start gap-3" style={{ borderBottom: '1px solid #2A3525' }}>
-                <button
-                  onClick={() => toggleReminder(r.id)}
-                  className="mt-1 w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
-                  style={{
-                    background: r.enabled ? '#A3E635' : 'transparent',
-                    border: '1px solid',
-                    borderColor: r.enabled ? '#A3E635' : '#2A3525'
-                  }}
-                >
-                  {r.enabled ? <CheckCircle className="w-4 h-4" style={{ color: '#0B0F08' }} /> : <BellOff className="w-3 h-3" style={{ color: '#8C9683' }} />}
-                </button>
+                {isAdmin ? (
+                  <button
+                    onClick={() => toggleReminder(r.id)}
+                    className="mt-1 w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: r.enabled ? '#A3E635' : 'transparent',
+                      border: '1px solid',
+                      borderColor: r.enabled ? '#A3E635' : '#2A3525'
+                    }}
+                  >
+                    {r.enabled ? <CheckCircle className="w-4 h-4" style={{ color: '#0B0F08' }} /> : <BellOff className="w-3 h-3" style={{ color: '#8C9683' }} />}
+                  </button>
+                ) : (
+                  <div
+                    className="mt-1 w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: r.enabled ? '#A3E635' : 'transparent',
+                      border: '1px solid',
+                      borderColor: r.enabled ? '#A3E635' : '#2A3525'
+                    }}
+                  >
+                    {r.enabled ? <CheckCircle className="w-4 h-4" style={{ color: '#0B0F08' }} /> : <BellOff className="w-3 h-3" style={{ color: '#8C9683' }} />}
+                  </div>
+                )}
                 <div className="flex-1 min-w-0">
                   <div className="font-semibold" style={{ color: r.enabled ? '#F5F7F0' : '#8C9683' }}>{r.title}</div>
                   {r.desc && <div className="text-xs mt-0.5" style={{ color: '#8C9683' }}>{r.desc}</div>}
@@ -2146,17 +2174,19 @@ function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, 
                     {freqLabel(r.frequency)}
                   </div>
                 </div>
-                <button
-                  onClick={() => deleteReminder(r.id)}
-                  className="p-1"
-                  style={{ color: '#8C9683' }}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => deleteReminder(r.id)}
+                    className="p-1"
+                    style={{ color: '#8C9683' }}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             ))
           )}
-          {addingReminder && (
+          {isAdmin && addingReminder && (
             <div className="p-4 space-y-3" style={{ background: '#0B0F08' }}>
               <input
                 value={newReminder.title}
@@ -2261,13 +2291,15 @@ function NotesView({ reminders, todayNote, config, onSaveReminders, onAddEntry, 
                       <span style={{ color: '#FACC15' }}>{entry.author}</span> · {formatRelative(entry.timestamp)}
                     </div>
                   </div>
-                  <button
-                    onClick={() => onDeleteEntry(entry.id)}
-                    className="p-1"
-                    style={{ color: '#8C9683' }}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={() => onDeleteEntry(entry.id)}
+                      className="p-1"
+                      style={{ color: '#8C9683' }}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               ))
             )}
@@ -2326,6 +2358,7 @@ function SetupView({ config, onSave, userEmail, userStatus, onSignOut }) {
   }
 
   const sortedSets = [...local.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const isAdmin = !!userStatus?.is_admin;
 
   function addCrew() {
     if (crewInput.trim() && !local.crew.includes(crewInput.trim())) {
