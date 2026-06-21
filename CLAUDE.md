@@ -64,11 +64,21 @@ When making changes to data shape, update the relevant section in App.jsx — th
 
 The field runs through its active sections back-to-back, in `order`, each for its own `hours`. There's no per-section watering frequency — instead `config.cycleDays` (default 7) is a single field-wide setting: once every active section has been watered since section #1 (lowest `order`) last finished, the whole field rests until `cycleDays` days after that finish, then the rotation starts over from section #1.
 
-- `computeRotationTimeline(config, lastCompleted, now, untilMs, postponedUntil)` (`src/App.jsx`) generates the forward timeline of `{set, startAt, endAt}` blocks — this is the source of truth for the schedule.
-- `computeNextSets()` and `computeProjectedSchedule()` are thin wrappers over it: `computeNextSets()` ranks sections by when the timeline says they next run (used by the "Up Next" card and due badges), `computeProjectedSchedule()` feeds the Plan tab's timeline view.
+- `computeRotationTimeline(config, lastCompleted, now, untilMs, postponedUntil, cycleOverride)` (`src/App.jsx`) generates the forward timeline of `{set, startAt, endAt}` blocks — this is the source of truth for the schedule.
+- `computeNextSets()` and `computeProjectedSchedule()` are thin wrappers over it: `computeNextSets()` ranks sections by when the timeline says they next run (used by the "Up Next" card and due badges), `computeProjectedSchedule()` feeds the Plan tab's timeline view. Both accept and forward `cycleOverride` the same way they do `postponedUntil`.
 - `migrateConfig()` fills in `cycleDays: 7` for configs saved before this model existed, and no longer sets a per-section `frequencyDays`.
 - The "Days Between Rotations" stepper in Setup edits `config.cycleDays`.
-- `supabase/functions/notify/index.ts` mirrors `migrateConfig()` and has its own `checkSectionsDue()` that fires once when a full rotation is done and `cycleDays` (plus any postponement) has elapsed since section #1 finished — keep it in sync if this model changes.
+- `isRotationResting(config, lastCompleted)` (`src/App.jsx`) is `true` once every active section has watered since section #1 last finished — i.e. the field is in its rest gap between rotations. Shared by `completeSet()` (to detect the moment a rotation just finished) and `MoistureCheckCard` (to decide whether to render).
+- `supabase/functions/notify/index.ts` mirrors `migrateConfig()` and has its own `checkSectionsDue()` that fires once when a full rotation is done and `cycleDays` (plus any postponement/override) has elapsed since section #1 finished — keep it in sync if this model changes.
+
+### Moisture check & one-off rest period
+
+When a `completeSet()` call causes `isRotationResting()` to flip from `false` to `true` (i.e. the just-finished set was the last active section needed to complete a full rotation), the app sends a `broadcastPush()` notification prompting the crew to check soil moisture before the next cycle starts.
+
+- `MoistureCheckCard` then renders on the Now tab for as long as `isRotationResting()` stays `true` (i.e. until section #1 starts its next pass). It shows the default resume date (`section #1's lastCompleted + cycleDays`) and, for admins, an "Adjust rest days for this rotation" control.
+- Adjusting it calls `setCycleOverride(days)` in `App()`, which writes `schedule.cycleOverride = { anchorAt, days }` where `anchorAt` is section #1's actual `lastCompleted` timestamp for the rotation that just finished (not `Date.now()`) — so it reflects "N days after we ended that section," per the original request, rather than drifting based on when the crew happens to open the app.
+- `computeRotationTimeline` substitutes `cycleOverride.days` for `config.cycleDays` only when computing the *current* rest gap, and only if `cycleOverride.anchorAt` still matches section #1's `lastCompleted` — once section #1 runs again and that timestamp changes, the override stops matching and is implicitly ignored (no cleanup needed, same auto-expiring pattern as `postponedUntil`). It does **not** change `config.cycleDays` itself, so future rotations still use the Setup default unless overridden again.
+- `supabase/functions/notify/index.ts`'s `checkSectionsDue()` mirrors this same override-matching logic so its "due to water" push fires at the overridden time, not the default `cycleDays` time.
 
 ### Postponing watering (rain / wet soil)
 

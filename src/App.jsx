@@ -395,12 +395,31 @@ function resolveAfiMode(set, config, schedule, weekKey) {
   return schedule?.afiOverrides?.[weekKey] || computeAutoAfiMode(config.plantingDate, weekKey);
 }
 
+// True once every active section has watered since section #1 (lowest order)
+// last finished -- i.e. the field is resting between rotations. This is the
+// natural point to remind the crew to check soil moisture before the next
+// rotation starts.
+function isRotationResting(config, lastCompleted = {}) {
+  const activeSets = (config.sets || []).filter(s => s.active !== false)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  if (activeSets.length === 0) return false;
+  const firstSetLast = lastCompleted[activeSets[0].id];
+  if (firstSetLast == null) return false;
+  return activeSets.every(s => {
+    const lc = lastCompleted[s.id];
+    return lc != null && lc >= firstSetLast;
+  });
+}
+
 // Builds a forward-looking timeline of which active section runs when. The
 // field runs through its sections back-to-back in `order`, each for its own
 // `hours`; once every active section has run since section #1 (lowest order)
 // last finished, the whole rotation idles until `cycleDays` days after that
-// finish before starting over from section #1.
-function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), untilMs = now, postponedUntil = null) {
+// finish before starting over from section #1. `cycleOverride` (set via the
+// "Rotation Complete" card) substitutes a one-off rest period in days for
+// just the current gap, anchored to when section #1 actually finished --
+// it stops applying automatically once section #1 starts its next pass.
+function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), untilMs = now, postponedUntil = null, cycleOverride = null) {
   const activeSets = (config.sets || []).filter(s => s.active !== false)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   if (activeSets.length === 0) return [];
@@ -423,7 +442,10 @@ function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), u
       return lc == null || lc < firstSetLast;
     });
     if (idx === -1) {
-      cursor = Math.max(firstSetLast + cycleMs, effectiveNow);
+      const restMs = (cycleOverride && cycleOverride.anchorAt === firstSetLast)
+        ? cycleOverride.days * DAY_MS
+        : cycleMs;
+      cursor = Math.max(firstSetLast + restMs, effectiveNow);
       startIdx = 0;
     } else {
       cursor = effectiveNow;
@@ -455,7 +477,7 @@ function computeRotationTimeline(config, lastCompleted = {}, now = Date.now(), u
 
 // Ranks active field sections by when the rotation timeline says they'll
 // next run, so the app can recommend what to run next.
-function computeNextSets(config, lastCompleted = {}, now = Date.now(), postponedUntil = null) {
+function computeNextSets(config, lastCompleted = {}, now = Date.now(), postponedUntil = null, cycleOverride = null) {
   const activeSets = (config.sets || []).filter(s => s.active !== false);
   if (activeSets.length === 0) return [];
 
@@ -463,7 +485,7 @@ function computeNextSets(config, lastCompleted = {}, now = Date.now(), postponed
   const totalHoursMs = activeSets.reduce((sum, s) => sum + (s.hours || 1), 0) * 3600000;
   const effectiveNow = (postponedUntil && postponedUntil > now) ? postponedUntil : now;
   const horizon = effectiveNow + cycleMs + 2 * totalHoursMs + 3600000;
-  const timeline = computeRotationTimeline(config, lastCompleted, now, horizon, postponedUntil);
+  const timeline = computeRotationTimeline(config, lastCompleted, now, horizon, postponedUntil, cycleOverride);
 
   const firstOccurrence = new Map();
   for (const entry of timeline) {
@@ -491,10 +513,10 @@ function computeNextSets(config, lastCompleted = {}, now = Date.now(), postponed
 }
 
 // Projects the field-wide rotation timeline forward `days` days for the Plan tab.
-function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDate = new Date(), postponedUntil = null) {
+function computeProjectedSchedule(config, lastCompleted = {}, days = 14, startDate = new Date(), postponedUntil = null, cycleOverride = null) {
   const now = startDate.getTime();
   const untilMs = now + days * DAY_MS;
-  return computeRotationTimeline(config, lastCompleted, now, untilMs, postponedUntil)
+  return computeRotationTimeline(config, lastCompleted, now, untilMs, postponedUntil, cycleOverride)
     .map(entry => ({ ...entry, isDue: now >= entry.startAt }));
 }
 
@@ -624,7 +646,7 @@ export default function App() {
     const wk = await getValue(`week:${weekKey}`, null);
     const newWeek = wk || { weekKey, mode: 'every', startedAt: null, sets: {} };
     setCurrentWeek(prev => JSON.stringify(prev) === JSON.stringify(newWeek) ? prev : newWeek);
-    const sch = await getValue('schedule', { lastCompleted: {}, afiOverrides: {}, postponedUntil: null });
+    const sch = await getValue('schedule', { lastCompleted: {}, afiOverrides: {}, postponedUntil: null, cycleOverride: null });
     setSchedule(prev => JSON.stringify(prev) === JSON.stringify(sch) ? prev : sch);
     const r = await getValue('reminders', DEFAULT_REMINDERS);
     setReminders(prev => JSON.stringify(prev) === JSON.stringify(r) ? prev : r);
@@ -747,10 +769,8 @@ export default function App() {
     await saveWeek(newWeek);
     await setValue('active', null);
 
-    const newSchedule = {
-      ...schedule,
-      lastCompleted: { ...schedule.lastCompleted, [activeSet.setId]: completedAt }
-    };
+    const newLastCompleted = { ...schedule.lastCompleted, [activeSet.setId]: completedAt };
+    const newSchedule = { ...schedule, lastCompleted: newLastCompleted };
     setSchedule(newSchedule);
     await setValue('schedule', newSchedule);
 
@@ -760,6 +780,16 @@ export default function App() {
       title: `${set?.label || 'Set'} completed`,
       body: `${crewMember || activeSet.startedBy} finished after ${hrs}h`
     });
+
+    // If this completion just finished a full rotation (every active section
+    // has now watered since section #1 last finished), prompt a moisture
+    // check before the field rests into its next cycle.
+    if (!isRotationResting(config, schedule.lastCompleted) && isRotationResting(config, newLastCompleted)) {
+      broadcastPush({
+        title: 'Rotation complete — check soil moisture',
+        body: 'Every section has watered. Check soil moisture before the next cycle starts — adjust rest days on the Now tab if needed.'
+      });
+    }
   }
 
   async function cancelActive() {
@@ -798,6 +828,27 @@ export default function App() {
   async function setPostponedUntil(until) {
     recordWrite();
     const newSchedule = { ...schedule, postponedUntil: until };
+    setSchedule(newSchedule);
+    await setValue('schedule', newSchedule);
+  }
+
+  // Sets (or clears, if days is null) a one-off rest period for the gap
+  // between the rotation that just finished and the next time section #1
+  // restarts -- anchored to when section #1 actually finished, so it stays
+  // tied to this specific rotation and stops applying once section #1 runs
+  // again. Lets the crew shorten or extend the default cycleDays rest based
+  // on what they find when they check soil moisture.
+  async function setCycleOverride(days) {
+    const activeSets = (config.sets || []).filter(s => s.active !== false)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const firstSet = activeSets[0];
+    const anchorAt = firstSet ? schedule.lastCompleted[firstSet.id] : null;
+    if (anchorAt == null) return;
+    recordWrite();
+    const newSchedule = {
+      ...schedule,
+      cycleOverride: days == null ? null : { anchorAt, days }
+    };
     setSchedule(newSchedule);
     await setValue('schedule', newSchedule);
   }
@@ -950,6 +1001,7 @@ export default function App() {
             onAdjustHours={adjustActiveSetHours}
             onSetAfiOverride={setAfiOverride}
             onSetPostponed={setPostponedUntil}
+            onSetCycleOverride={setCycleOverride}
             tick={tick}
             setView={setView}
             isAdmin={isAdmin}
@@ -1022,7 +1074,7 @@ function Header({ config, weekKey }) {
   );
 }
 
-function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onAdjustHours, onSetAfiOverride, onSetPostponed, tick, setView, isAdmin }) {
+function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders, todayNote, onStart, onComplete, onCancel, onAddTodayEntry, onMarkRowAdvanced, onAdjustHours, onSetAfiOverride, onSetPostponed, onSetCycleOverride, tick, setView, isAdmin }) {
   const [showComplete, setShowComplete] = useState(false);
   const [showStart, setShowStart] = useState(null);
   const [showTailWatch, setShowTailWatch] = useState(false);
@@ -1034,7 +1086,7 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
 
   const setsDone = Object.values(currentWeek.sets).filter(s => s.status === 'done').length;
   const activeSetsCount = config.sets.filter(s => s.active !== false).length;
-  const nextSets = computeNextSets(config, schedule.lastCompleted, Date.now(), schedule.postponedUntil);
+  const nextSets = computeNextSets(config, schedule.lastCompleted, Date.now(), schedule.postponedUntil, schedule.cycleOverride);
   const nextInfo = nextSets[0];
   const nextSet = nextInfo?.set;
 
@@ -1092,6 +1144,10 @@ function NowView({ config, activeSet, currentWeek, schedule, weekKey, reminders,
           setCustomHours={setCustomHours}
           onStart={onStart}
         />
+      )}
+
+      {!activeSet && isRotationResting(config, schedule.lastCompleted) && (
+        <MoistureCheckCard config={config} schedule={schedule} isAdmin={isAdmin} onSetCycleOverride={onSetCycleOverride} />
       )}
 
       {!activeSet && nextSet && isAdmin && (
@@ -1571,6 +1627,93 @@ function PostponeCard({ schedule, onSetPostponed }) {
   );
 }
 
+// Shown once a full rotation finishes (every active section has watered
+// since section #1 last finished) -- reminds the crew to check soil
+// moisture and lets admins dial in a one-off rest period for just this
+// rotation instead of the fixed default in Setup. Disappears on its own
+// once section #1 starts its next pass.
+function MoistureCheckCard({ config, schedule, isAdmin, onSetCycleOverride }) {
+  const [editing, setEditing] = useState(false);
+  const [days, setDays] = useState(config.cycleDays || 7);
+
+  const activeSets = (config.sets || []).filter(s => s.active !== false)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const firstSet = activeSets[0];
+  const anchorAt = firstSet ? schedule.lastCompleted?.[firstSet.id] : null;
+  if (!firstSet || anchorAt == null) return null;
+
+  const override = (schedule.cycleOverride && schedule.cycleOverride.anchorAt === anchorAt)
+    ? schedule.cycleOverride
+    : null;
+  const effectiveDays = override ? override.days : (config.cycleDays || 7);
+  const resumeAt = new Date(anchorAt + effectiveDays * DAY_MS);
+
+  function startEditing() {
+    setDays(effectiveDays);
+    setEditing(true);
+  }
+
+  function save() {
+    onSetCycleOverride(Math.max(1, Math.min(60, Number(days) || effectiveDays)));
+    setEditing(false);
+  }
+
+  return (
+    <div className="rounded-2xl p-4" style={{ background: '#151A11', border: '1px solid #A3E635' }}>
+      <div className="flex items-center gap-3 mb-3">
+        <Droplets className="w-5 h-5 flex-shrink-0" style={{ color: '#A3E635' }} />
+        <div className="min-w-0">
+          <div className="text-xs uppercase tracking-[0.2em] mb-0.5" style={{ color: '#A3E635' }}>
+            Rotation Complete · Check Moisture
+          </div>
+          <div className="text-sm" style={{ color: '#8C9683' }}>
+            {firstSet.label} resumes {formatDayLabel(resumeAt)} ({effectiveDays}d{override ? ', adjusted' : ' default'})
+          </div>
+        </div>
+      </div>
+      {isAdmin && (
+        editing ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setDays(d => Math.max(1, d - 1))}
+              className="w-10 h-10 rounded-xl text-lg font-semibold"
+              style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+            >−</button>
+            <div className="flex-1 text-center font-mono-time">{days}d</div>
+            <button
+              onClick={() => setDays(d => Math.min(60, d + 1))}
+              className="w-10 h-10 rounded-xl text-lg font-semibold"
+              style={{ background: '#0B0F08', border: '1px solid #2A3525', color: '#F5F7F0' }}
+            >+</button>
+            <button
+              onClick={() => setEditing(false)}
+              className="py-2 px-3 rounded-xl text-sm"
+              style={{ color: '#8C9683' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              className="py-2 px-3 rounded-xl text-sm font-semibold"
+              style={{ background: '#FACC15', color: '#0B0F08' }}
+            >
+              Save
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={startEditing}
+            className="w-full py-2 rounded-xl text-sm font-semibold"
+            style={{ background: '#2A3525', color: '#F5F7F0' }}
+          >
+            Adjust rest days for this rotation
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
 // Shows the field-wide AFI pattern that "Auto" sections will run this
 // calendar week, and lets the crew override it for just this week.
 function WeekPatternCard({ config, schedule, weekKey, onSetOverride, isAdmin }) {
@@ -1654,7 +1797,7 @@ function WeekView({ config, currentWeek, schedule, activeSet, photosByLocation, 
   const [photoSetId, setPhotoSetId] = useState(null);
   const sortedSets = [...config.sets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const dueById = {};
-  computeNextSets(config, schedule.lastCompleted, Date.now(), schedule.postponedUntil).forEach(info => { dueById[info.set.id] = info; });
+  computeNextSets(config, schedule.lastCompleted, Date.now(), schedule.postponedUntil, schedule.cycleOverride).forEach(info => { dueById[info.set.id] = info; });
 
   return (
     <div className="space-y-4">
@@ -3317,7 +3460,7 @@ function RestingRow({ to, isLast }) {
 function PlanView({ config, schedule, setView }) {
   const activeSets = config.sets.filter(s => s.active !== false);
   const stageInfo = getCurrentStage(config.plantingDate);
-  const plan = computeProjectedSchedule(config, schedule.lastCompleted, 14, new Date(), schedule.postponedUntil);
+  const plan = computeProjectedSchedule(config, schedule.lastCompleted, 14, new Date(), schedule.postponedUntil, schedule.cycleOverride);
 
   if (activeSets.length === 0) {
     return (

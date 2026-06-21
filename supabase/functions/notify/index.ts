@@ -154,7 +154,13 @@ async function checkSectionsDue(notifyState) {
   });
   if (!allDone) return;
 
-  const cycleMs = (config.cycleDays || 7) * DAY_MS;
+  // A one-off rest-period override (set on the "Rotation Complete" card after
+  // checking soil moisture) takes the place of cycleDays for just this gap,
+  // as long as it was set for this same completion of section #1.
+  const override = schedule.cycleOverride;
+  const cycleMs = (override && override.anchorAt === firstSetLast)
+    ? override.days * DAY_MS
+    : (config.cycleDays || 7) * DAY_MS;
   let nextRotationStart = firstSetLast + cycleMs;
   // A rain/wet-soil postponement pushes the restart back further still.
   if (schedule.postponedUntil && schedule.postponedUntil > nextRotationStart) {
